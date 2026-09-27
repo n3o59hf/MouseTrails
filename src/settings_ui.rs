@@ -195,6 +195,35 @@ impl eframe::App for SettingsApp {
         let mut toggle_startup: Option<bool> = None;
         let mut close = false;
 
+        // Footer as a bottom panel so it's always visible — putting it inside
+        // the CentralPanel let the scroll area push it below the window edge.
+        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.checkbox(&mut startup, "Start with Windows").changed() {
+                    toggle_startup = Some(startup);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                    if ui.button("Reset to defaults").clicked() {
+                        // Keep UI-state flags; reset everything else.
+                        s = Settings { tray_hint_shown: s.tray_hint_shown, ..Settings::default() };
+                    }
+                });
+            });
+            if let Some(err) = &startup_err {
+                ui.colored_label(egui::Color32::RED, err.clone());
+            }
+            ui.label(
+                egui::RichText::new("Changes apply instantly and save automatically.")
+                    .small()
+                    .weak(),
+            );
+            ui.add_space(2.0);
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("MouseTrails");
@@ -232,31 +261,6 @@ impl eframe::App for SettingsApp {
                     );
                 });
             });
-
-            ui.separator();
-
-            ui.horizontal(|ui| {
-                if ui.checkbox(&mut startup, "Start with Windows").changed() {
-                    toggle_startup = Some(startup);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                    if ui.button("Reset to defaults").clicked() {
-                        s = Settings::default();
-                    }
-                });
-            });
-            if let Some(err) = &startup_err {
-                ui.colored_label(egui::Color32::RED, err.clone());
-            }
-            ui.add_space(2.0);
-            ui.label(
-                egui::RichText::new("Changes apply instantly and save automatically.")
-                    .small()
-                    .weak(),
-            );
         });
 
         if let Some(v) = toggle_startup {
