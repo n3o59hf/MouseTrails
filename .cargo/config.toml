@@ -1,0 +1,4 @@
+# Statically link the C runtime so the release binary is a single
+# self-contained .exe with no Visual C++ Redistributable dependency.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

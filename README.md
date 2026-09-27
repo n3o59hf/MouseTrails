@@ -31,7 +31,15 @@ click.
 cargo build --release
 ```
 
-Run `target\release\MouseTrails.exe`. Optional flags:
+The result is a **single self-contained `MouseTrails.exe`** (~5 MB): the C
+runtime is statically linked (`.cargo/config.toml` sets
+`target-feature=+crt-static`) and the binary is LTO-optimized and stripped, so
+it needs no Visual C++ Redistributable — just copy the exe anywhere and run it
+(Windows 10/11; the only imports are system DLLs like `opengl32` and `dwmapi`).
+Settings stay per-user in `%APPDATA%\MouseTrails\config.json`. A convenience
+copy is kept at the repo root (gitignored).
+
+Optional flag:
 
 - `--settings` — open the settings window at startup (if another instance is
   already running, it just brings its settings window to the front).
