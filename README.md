@@ -7,6 +7,8 @@ rainbow icon sits near the clock; your cursor leaves a rainbow ribbon, soap
 bubbles drift up from it (clicking blasts them all outward), and rings
 ripple out when you click.
 
+![MouseTrails: rainbow ribbon, bubbles and sparkles on a dark desktop](assets/screenshot.png)
+
 ![demo](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 
 ## Features
