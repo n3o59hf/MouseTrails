@@ -31,13 +31,15 @@ click.
 cargo build --release
 ```
 
-The result is a **single self-contained `MouseTrails.exe`** (~5 MB): the C
+The result is a **single self-contained `MouseTrails.exe`** (~4 MB): the C
 runtime is statically linked (`.cargo/config.toml` sets
-`target-feature=+crt-static`) and the binary is LTO-optimized and stripped, so
-it needs no Visual C++ Redistributable — just copy the exe anywhere and run it
-(Windows 10/11; the only imports are system DLLs like `opengl32` and `dwmapi`).
-Settings stay per-user in `%APPDATA%\MouseTrails\config.json`. A convenience
-copy is kept at the repo root (gitignored).
+`target-feature=+crt-static`), panics abort (no unwinding tables), accesskit
+(screen-reader support for the settings window) is compiled out, and the
+binary is LTO-optimized and stripped — it needs no Visual C++
+Redistributable, just copy the exe anywhere and run it (Windows 10/11; the
+only imports are system DLLs like `opengl32` and `dwmapi`). Settings stay
+per-user in `%APPDATA%\MouseTrails\config.json`. A convenience copy is kept
+at the repo root (gitignored).
 
 The exe carries the rainbow-ribbon icon (Explorer, taskbar, shortcuts) via an
 embedded resource: `assets/mousetrails.ico` is generated once by
