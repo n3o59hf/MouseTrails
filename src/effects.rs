@@ -578,19 +578,10 @@ impl Effect for Bubbles {
             b.vy *= drag;
             b.x += b.vx * ctx.dt;
             b.y += b.vy * ctx.dt;
-
-            // The cursor gently pushes bubbles away.
-            let dx = b.x - ctx.mouse.0;
-            let dy = b.y - ctx.mouse.1;
-            let d2 = dx * dx + dy * dy;
-            let rr = b.r + 26.0;
-            if d2 < rr * rr && d2 > 0.01 {
-                let d = d2.sqrt();
-                let f = (1.0 - d / rr) * 900.0 * ctx.dt;
-                b.vx += dx / d * f;
-                b.vy += dy / d * f;
-            }
         }
+
+        resolve_bubble_collisions(&mut self.list);
+        resolve_cursor_collisions(&mut self.list, ctx.mouse, ctx.vel);
     }
 
     fn render(&mut self, pm: &mut PixmapMut, cfg: &Settings, now: f32) {
@@ -651,6 +642,98 @@ impl Effect for Bubbles {
             }
         }
         b
+    }
+}
+
+/// Effective collision radius of the cursor (it shoves bubbles around like a
+/// small moving ball).
+const CURSOR_RADIUS: f32 = 12.0;
+
+/// Soft circle-vs-circle collisions between bubbles: positional separation
+/// plus an impulse along the collision normal when they approach each other.
+/// Mass scales with radius, so big bubbles shove small ones aside.
+fn resolve_bubble_collisions(list: &mut [Bubble]) {
+    let n = list.len();
+    for i in 0..n {
+        if list[i].popped {
+            continue;
+        }
+        for j in (i + 1)..n {
+            if list[j].popped {
+                continue;
+            }
+            let dx = list[j].x - list[i].x;
+            let dy = list[j].y - list[i].y;
+            let rsum = list[i].r + list[j].r;
+            let d2 = dx * dx + dy * dy;
+            if d2 >= rsum * rsum || d2 < 0.0001 {
+                continue;
+            }
+            let d = d2.sqrt();
+            let (nx, ny) = (dx / d, dy / d);
+            let overlap = rsum - d;
+
+            // Split positional correction by inverse mass.
+            let (mi, mj) = (list[i].r, list[j].r);
+            let (wi, wj) = (mj / (mi + mj), mi / (mi + mj));
+            let corr = overlap * 0.5;
+            let (a, b) = list.split_at_mut(j);
+            let bi = &mut a[i];
+            let bj = &mut b[0];
+            bi.x -= nx * corr * wi;
+            bi.y -= ny * corr * wi;
+            bj.x += nx * corr * wj;
+            bj.y += ny * corr * wj;
+
+            // Impulse if they are moving toward each other.
+            let rvx = bj.vx - bi.vx;
+            let rvy = bj.vy - bi.vy;
+            let rel_n = rvx * nx + rvy * ny;
+            if rel_n < 0.0 {
+                let restitution = 0.35;
+                let jimp = -(1.0 + restitution) * rel_n / (1.0 / mi + 1.0 / mj);
+                bi.vx -= nx * jimp / mi;
+                bi.vy -= ny * jimp / mi;
+                bj.vx += nx * jimp / mj;
+                bj.vy += ny * jimp / mj;
+            }
+        }
+    }
+}
+
+/// The cursor behaves like an infinitely heavy moving ball: bubbles inside its
+/// reach are pushed out of the way and pick up the cursor's velocity, so a
+/// quick swipe plows a bubble along instead of just repelling it.
+fn resolve_cursor_collisions(list: &mut [Bubble], mouse: (f32, f32), cursor_vel: (f32, f32)) {
+    for b in list.iter_mut() {
+        if b.popped {
+            continue;
+        }
+        let dx = b.x - mouse.0;
+        let dy = b.y - mouse.1;
+        let rr = b.r + CURSOR_RADIUS;
+        let d2 = dx * dx + dy * dy;
+        if d2 >= rr * rr || d2 < 0.0001 {
+            continue;
+        }
+        let d = d2.sqrt();
+        let (nx, ny) = (dx / d, dy / d);
+        let overlap = rr - d;
+
+        // Cursor is immovable: push the bubble out of the overlap entirely.
+        b.x += nx * overlap;
+        b.y += ny * overlap;
+
+        // Impulse against the cursor's velocity, with restitution.
+        let rvx = b.vx - cursor_vel.0;
+        let rvy = b.vy - cursor_vel.1;
+        let rel_n = rvx * nx + rvy * ny;
+        if rel_n < 0.0 {
+            let restitution = 0.55;
+            let jimp = (-(1.0 + restitution) * rel_n).min(2600.0);
+            b.vx += nx * jimp;
+            b.vy += ny * jimp;
+        }
     }
 }
 
