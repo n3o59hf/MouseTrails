@@ -39,6 +39,11 @@ it needs no Visual C++ Redistributable — just copy the exe anywhere and run it
 Settings stay per-user in `%APPDATA%\MouseTrails\config.json`. A convenience
 copy is kept at the repo root (gitignored).
 
+The exe carries the rainbow-ribbon icon (Explorer, taskbar, shortcuts) via an
+embedded resource: `assets/mousetrails.ico` is generated once by
+`regen-icon.cmd` (or `cargo run --release --example make_icon`) from the same
+procedural painter the tray uses, and `build.rs` embeds it at compile time.
+
 Optional flag:
 
 - `--settings` — open the settings window at startup (if another instance is

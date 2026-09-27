@@ -1,11 +1,12 @@
 #![windows_subsystem = "windows"]
 
 mod effects;
-mod icon;
 mod overlay;
 mod settings;
 mod settings_ui;
 mod startup;
+
+use mousetrails::icon;
 
 use std::sync::{Arc, RwLock};
 
