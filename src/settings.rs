@@ -74,7 +74,7 @@ impl Default for SparkleCfg {
     fn default() -> Self {
         Self {
             enabled: true,
-            rate: 18.0,
+            rate: 40.0,
             size: 4.0,
             gravity: -30.0,
             lifetime: 0.9,
