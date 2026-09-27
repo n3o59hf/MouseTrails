@@ -2,9 +2,8 @@
 
 Windows Plus!-style cursor effects that live in your system tray. A little
 rainbow icon sits near the clock; your cursor leaves a rainbow ribbon, soap
-bubbles drift up from it (clicking pops the ones you touch and blasts the
-rest away), and rings ripple out when you
-click.
+bubbles drift up from it (clicking blasts them all outward), and rings
+ripple out when you click.
 
 ![demo](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 

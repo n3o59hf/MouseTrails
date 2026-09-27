@@ -474,8 +474,6 @@ struct Bubble {
     life: f32,
     wob_phase: f32,
     wob_freq: f32,
-    popped: bool,
-    pop_at: f32,
 }
 
 const BUBBLE_HUES: [f32; 6] = [0.55, 0.75, 0.90, 0.10, 0.40, 0.63];
@@ -534,8 +532,6 @@ impl Effect for Bubbles {
                     life: c.lifetime * rnd_range(0.7, 1.2),
                     wob_phase: rnd01() * std::f32::consts::TAU,
                     wob_freq: rnd_range(1.5, 3.2),
-                    popped: false,
-                    pop_at: 0.0,
                 });
                 self.next_hue += 1;
             } else {
@@ -543,23 +539,15 @@ impl Effect for Bubbles {
             }
         }
 
-        // Clicking pops the bubbles you touched and blasts the rest outward —
-        // the cursor plows bubbles away as you approach, so a generous pop
-        // radius plus a shockwave keeps clicks feeling physical.
+        // Clicking blasts bubbles outward from the click point like a
+        // shockwave — tapered with distance, with a little angular jitter so
+        // the scatter looks organic.
         if ctx.clicked {
             for b in self.list.iter_mut() {
-                if b.popped {
-                    continue;
-                }
                 let dx = b.x - ctx.mouse.0;
                 let dy = b.y - ctx.mouse.1;
                 let d = (dx * dx + dy * dy).sqrt();
-                if d < b.r + 30.0 {
-                    b.popped = true;
-                    b.pop_at = ctx.now;
-                } else if d < SHOCKWAVE_RADIUS {
-                    // Radial impulse, tapered with distance, with a little
-                    // angular jitter so the scatter looks organic.
+                if d < SHOCKWAVE_RADIUS {
                     let fall = 1.0 - d / SHOCKWAVE_RADIUS;
                     let mag = 250.0 + 950.0 * fall;
                     let ang = dy.atan2(dx) + rnd_range(-0.35, 0.35);
@@ -571,9 +559,6 @@ impl Effect for Bubbles {
 
         self.list.retain(|b| {
             let age = ctx.now - b.born;
-            if b.popped {
-                return ctx.now - b.pop_at < 0.15;
-            }
             if age > b.life || b.y < -b.r - 40.0 {
                 return false;
             }
@@ -583,11 +568,8 @@ impl Effect for Bubbles {
             true
         });
 
+        // Physics: buoyancy pulls up, drag calms everything, wobble sways.
         for b in self.list.iter_mut() {
-            if b.popped {
-                continue;
-            }
-            // Physics: buoyancy pulls up, drag calms everything, wobble sways.
             b.vy -= c.buoyancy * ctx.dt;
             b.vx += (ctx.now * b.wob_freq + b.wob_phase).sin() * c.wobble * 4.0 * ctx.dt;
             let drag = (-2.2 * ctx.dt).exp();
@@ -607,15 +589,11 @@ impl Effect for Bubbles {
             return;
         }
         for b in &self.list {
-            let k = if b.popped {
-                (1.0 - (now - b.pop_at) / 0.15).clamp(0.0, 1.0)
-            } else {
-                (1.0 - (now - b.born) / b.life).clamp(0.0, 1.0)
-            };
+            let k = (1.0 - (now - b.born) / b.life).clamp(0.0, 1.0);
             if k <= 0.0 {
                 continue;
             }
-            let r = b.r * (1.0 + if b.popped { 0.35 * (1.0 - k) } else { 0.0 });
+            let r = b.r;
             let (cr, cg, cb) = hsv(b.hue, 0.55, 0.95);
             let alpha = 0.85 * k;
 
@@ -672,13 +650,7 @@ const CURSOR_RADIUS: f32 = 12.0;
 fn resolve_bubble_collisions(list: &mut [Bubble]) {
     let n = list.len();
     for i in 0..n {
-        if list[i].popped {
-            continue;
-        }
         for j in (i + 1)..n {
-            if list[j].popped {
-                continue;
-            }
             let dx = list[j].x - list[i].x;
             let dy = list[j].y - list[i].y;
             let rsum = list[i].r + list[j].r;
@@ -723,9 +695,6 @@ fn resolve_bubble_collisions(list: &mut [Bubble]) {
 /// quick swipe plows a bubble along instead of just repelling it.
 fn resolve_cursor_collisions(list: &mut [Bubble], mouse: (f32, f32), cursor_vel: (f32, f32)) {
     for b in list.iter_mut() {
-        if b.popped {
-            continue;
-        }
         let dx = b.x - mouse.0;
         let dy = b.y - mouse.1;
         let rr = b.r + CURSOR_RADIUS;
@@ -1050,8 +1019,6 @@ mod tests {
             life: 100.0,
             wob_phase: 0.0,
             wob_freq: 1.0,
-            popped: false,
-            pop_at: 0.0,
         }
     }
 
@@ -1074,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn click_pops_touched_and_blasts_rest_outward() {
+    fn click_blasts_all_bubbles_outward() {
         let mut b = Bubbles::default();
         // One under the cursor, one mid-range, one far outside the shockwave.
         b.list.push(bubble(0.0, 0.0));
@@ -1083,8 +1050,11 @@ mod tests {
 
         b.update(&ctx((0.0, 0.0), true, 0.0));
 
-        assert!(b.list[0].popped, "bubble under the cursor should pop");
-        assert!(!b.list[1].popped, "mid-range bubble should survive");
+        assert!(
+            b.list[0].vx > 800.0,
+            "bubble under the cursor should get the full blast, vx={}",
+            b.list[0].vx
+        );
         assert!(
             b.list[1].vx > 350.0,
             "mid-range bubble should be blasted outward, vx={}",
