@@ -3,7 +3,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use eframe::egui;
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 
 use crate::icon;
 use crate::settings::{self, Settings, TrailStyle};
@@ -35,6 +35,11 @@ impl SettingsUiManager {
         if self.alive.load(std::sync::atomic::Ordering::Relaxed) {
             if let Some(tx) = &self.tx {
                 if tx.send(UiMsg::Show).is_ok() {
+                    // The persistent window may be hidden — and while hidden,
+                    // eframe's event loop is fully dormant (request_repaint
+                    // never wakes it), so the queued Show would never be
+                    // processed. Wake it directly instead.
+                    show_settings_window();
                     return;
                 }
             }
@@ -62,6 +67,17 @@ impl SettingsUiManager {
     }
 }
 
+/// Brings the (hidden) settings window back on screen from outside the egui
+/// loop. A no-op when the window doesn't exist yet.
+fn show_settings_window() {
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SW_SHOW};
+        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), w!("MouseTrails Settings")) {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+    }
+}
+
 fn run_ui(shared: Arc<settings::SharedSettings>, rx: Receiver<UiMsg>) {
     let icon_rgba = icon::icon_rgba_straight();
     let icon = egui::IconData { width: 32, height: 32, rgba: icon_rgba };
@@ -73,6 +89,7 @@ fn run_ui(shared: Arc<settings::SharedSettings>, rx: Receiver<UiMsg>) {
         startup: startup::is_enabled(),
         startup_err: None,
         saved,
+        updates: 0,
     };
 
     let mut options = eframe::NativeOptions {
@@ -96,13 +113,22 @@ fn run_ui(shared: Arc<settings::SharedSettings>, rx: Receiver<UiMsg>) {
         options,
         Box::new(move |_cc| Ok(Box::new(app) as Box<dyn eframe::App>)),
     );
+}
 
-    // The first time ever that the settings window is closed, tell the user
-    // where MouseTrails lives from now on.
+/// Hide instead of close: the settings window is a singleton that lives as
+/// long as the process, so reopening from the tray is instant and we never
+/// have to spin up a second eframe event loop.
+fn hide_settings_window(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    // The first time the settings window goes away, tell the user where
+    // MouseTrails lives from now on.
     if !settings::tray_hint_shown() {
         settings::set_tray_hint_shown();
         unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_TOPMOST};
+            use windows::Win32::UI::WindowsAndMessaging::{
+                MessageBoxW, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_TOPMOST,
+            };
             let _ = MessageBoxW(
                 None,
                 w!(
@@ -114,6 +140,8 @@ fn run_ui(shared: Arc<settings::SharedSettings>, rx: Receiver<UiMsg>) {
                 MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST,
             );
         }
+        // Keep showing the window loop responsive while the box was up.
+        ctx.request_repaint();
     }
 }
 
@@ -123,13 +151,22 @@ struct SettingsApp {
     startup: bool,
     startup_err: Option<String>,
     saved: Settings,
+    updates: u64,
 }
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.updates += 1;
+        if std::env::var("MOUSETRAILS_DEBUG").is_ok() && self.updates % 100 == 0 {
+            crate::overlay::debug_log(format!("ui: update #{} visible={}", self.updates,
+                true));
+        }
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 UiMsg::Show => {
+                    if std::env::var("MOUSETRAILS_DEBUG").is_ok() {
+                        crate::overlay::debug_log("ui: Show received".into());
+                    }
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -142,6 +179,15 @@ impl eframe::App for SettingsApp {
         }
         // Keep polling the channel even when nothing else repaints.
         ctx.request_repaint_after(std::time::Duration::from_millis(150));
+
+        // Intercept both the X button and the Close button — hide, don't die.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if std::env::var("MOUSETRAILS_DEBUG").is_ok() {
+                crate::overlay::debug_log("ui: close_requested intercepted".into());
+            }
+            hide_settings_window(ctx);
+            return;
+        }
 
         let mut s = self.shared.settings.read().unwrap().clone();
         let mut startup = self.startup;

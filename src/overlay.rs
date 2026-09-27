@@ -36,7 +36,7 @@ const ID_STARTUP: u32 = 2;
 const ID_EXIT: u32 = 3;
 
 // Diagnostics, enabled via MOUSETRAILS_DEBUG / MOUSETRAILS_DUMP env vars.
-fn debug_log(line: String) {
+pub(crate) fn debug_log(line: String) {
     let path = std::env::temp_dir().join("mousetrails_debug.log");
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         use std::io::Write;
