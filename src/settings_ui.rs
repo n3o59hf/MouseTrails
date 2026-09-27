@@ -235,7 +235,7 @@ impl eframe::App for SettingsApp {
             });
             ui.label(
                 egui::RichText::new(
-                    "Windows Plus! style effects that follow your cursor. \
+                    "Playful effects that follow your cursor. \
                      MouseTrails lives in the system tray, near the clock.",
                 )
                 .small()

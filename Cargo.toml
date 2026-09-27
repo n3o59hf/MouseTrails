@@ -2,7 +2,7 @@
 name = "MouseTrails"
 version = "0.1.0"
 edition = "2021"
-description = "Windows Plus! style cursor effects that live in your system tray"
+description = "Playful cursor effects that live in your system tray"
 
 [[bin]]
 name = "MouseTrails"

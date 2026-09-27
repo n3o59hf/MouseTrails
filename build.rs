@@ -6,7 +6,7 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rerun-if-changed=assets/mousetrails.ico");
         let mut res = winresource::WindowsResource::new();
-        res.set("FileDescription", "MouseTrails — Windows Plus! style cursor effects");
+        res.set("FileDescription", "MouseTrails — playful cursor effects");
         res.set("ProductName", "MouseTrails");
         if Path::new("assets/mousetrails.ico").exists() {
             res.set_icon("assets/mousetrails.ico");
