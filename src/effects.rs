@@ -226,6 +226,8 @@ const TRAIL_MAX_POINTS: usize = 1024;
 /// After the cursor stops moving, bubble/sparkle emission fades out over
 /// this many seconds instead of cutting off instantly.
 const EMISSION_RAMP_DOWN_SECS: f32 = 0.5;
+/// Clicks shove bubbles within this range outward from the click point.
+const SHOCKWAVE_RADIUS: f32 = 240.0;
 
 pub struct Trail {
     pts: std::collections::VecDeque<TrailPoint>,
@@ -541,13 +543,28 @@ impl Effect for Bubbles {
             }
         }
 
-        // Clicking pops nearby bubbles.
+        // Clicking pops the bubbles you touched and blasts the rest outward —
+        // the cursor plows bubbles away as you approach, so a generous pop
+        // radius plus a shockwave keeps clicks feeling physical.
         if ctx.clicked {
             for b in self.list.iter_mut() {
-                let d = ((b.x - ctx.mouse.0).powi(2) + (b.y - ctx.mouse.1).powi(2)).sqrt();
-                if d < b.r + 22.0 && !b.popped {
+                if b.popped {
+                    continue;
+                }
+                let dx = b.x - ctx.mouse.0;
+                let dy = b.y - ctx.mouse.1;
+                let d = (dx * dx + dy * dy).sqrt();
+                if d < b.r + 30.0 {
                     b.popped = true;
                     b.pop_at = ctx.now;
+                } else if d < SHOCKWAVE_RADIUS {
+                    // Radial impulse, tapered with distance, with a little
+                    // angular jitter so the scatter looks organic.
+                    let fall = 1.0 - d / SHOCKWAVE_RADIUS;
+                    let mag = 250.0 + 950.0 * fall;
+                    let ang = dy.atan2(dx) + rnd_range(-0.35, 0.35);
+                    b.vx += ang.cos() * mag;
+                    b.vy += ang.sin() * mag;
                 }
             }
         }
@@ -1014,5 +1031,95 @@ impl Effects {
             self.sparkles.list.len(),
             self.ripples.list.len(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bubble(x: f32, y: f32) -> Bubble {
+        Bubble {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            r: 10.0,
+            hue: 0.0,
+            born: 0.0,
+            life: 100.0,
+            wob_phase: 0.0,
+            wob_freq: 1.0,
+            popped: false,
+            pop_at: 0.0,
+        }
+    }
+
+    fn ctx(mouse: (f32, f32), clicked: bool, moving: f32) -> Ctx<'static> {
+        Ctx {
+            dt: 1.0 / 60.0,
+            now: 0.5,
+            mouse,
+            vel: (0.0, 0.0),
+            clicked,
+            moving,
+            cfg: test_settings(),
+            screen: (3440.0, 1440.0),
+        }
+    }
+
+    fn test_settings() -> &'static Settings {
+        // Defaults are small consts; a leaked static keeps the borrow simple.
+        Box::leak(Box::new(Settings::default()))
+    }
+
+    #[test]
+    fn click_pops_touched_and_blasts_rest_outward() {
+        let mut b = Bubbles::default();
+        // One under the cursor, one mid-range, one far outside the shockwave.
+        b.list.push(bubble(0.0, 0.0));
+        b.list.push(bubble(150.0, 0.0));
+        b.list.push(bubble(2000.0, 0.0));
+
+        b.update(&ctx((0.0, 0.0), true, 0.0));
+
+        assert!(b.list[0].popped, "bubble under the cursor should pop");
+        assert!(!b.list[1].popped, "mid-range bubble should survive");
+        assert!(
+            b.list[1].vx > 350.0,
+            "mid-range bubble should be blasted outward, vx={}",
+            b.list[1].vx
+        );
+        assert!(
+            b.list[1].vy.abs() < 600.0,
+            "blast should be roughly radial, vy={}",
+            b.list[1].vy
+        );
+        assert!(
+            b.list[2].vx.abs() < 5.0 && b.list[2].vy.abs() < 5.0,
+            "bubble beyond the shockwave should be untouched, vx={} vy={}",
+            b.list[2].vx,
+            b.list[2].vy
+        );
+    }
+
+    #[test]
+    fn emission_ramps_down_then_stops_after_idle() {
+        let mut b = Bubbles::default();
+        // Cursor idle: ramp allows a burst of spawns, then they must stop.
+        for _ in 0..30 {
+            b.update(&ctx((100.0, 100.0), false, 0.0));
+        }
+        let after_ramp = b.list.len();
+        assert!(after_ramp > 0, "ramp should still emit briefly, got 0");
+
+        for _ in 0..90 {
+            b.update(&ctx((100.0, 100.0), false, 0.0));
+        }
+        assert_eq!(
+            b.list.len(),
+            after_ramp,
+            "no further spawns once the ramp finished"
+        );
     }
 }
