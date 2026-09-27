@@ -223,6 +223,9 @@ const SPACING_PX: f32 = 4.0;
 const TELEPORT_PX: f32 = 150.0;
 /// Cap on stored points (≈ path length / spacing).
 const TRAIL_MAX_POINTS: usize = 1024;
+/// After the cursor stops moving, bubble/sparkle emission fades out over
+/// this many seconds instead of cutting off instantly.
+const EMISSION_RAMP_DOWN_SECS: f32 = 0.5;
 
 pub struct Trail {
     pts: std::collections::VecDeque<TrailPoint>,
@@ -479,11 +482,13 @@ pub struct Bubbles {
     list: Vec<Bubble>,
     acc: f32,
     next_hue: usize,
+    /// Seconds since the cursor last moved — drives the emission ramp-down.
+    idle: f32,
 }
 
 impl Default for Bubbles {
     fn default() -> Self {
-        Self { list: Vec::new(), acc: 0.0, next_hue: 0 }
+        Self { list: Vec::new(), acc: 0.0, next_hue: 0, idle: 0.0 }
     }
 }
 
@@ -502,8 +507,16 @@ impl Effect for Bubbles {
             return;
         }
 
+        // Emissions ramp down over EMISSION_RAMP_DOWN_SECS once the cursor
+        // stops moving, instead of cutting off instantly.
         if ctx.moving > 0.5 {
-            self.acc += c.rate.max(0.0) * ctx.dt;
+            self.idle = 0.0;
+        } else {
+            self.idle += ctx.dt;
+        }
+        let ramp = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
+        if ramp > 0.0 {
+            self.acc += c.rate.max(0.0) * ctx.dt * ramp;
         }
         while self.acc >= 1.0 {
             self.acc -= 1.0;
@@ -658,11 +671,13 @@ struct Spark {
 pub struct Sparkles {
     list: Vec<Spark>,
     acc: f32,
+    /// Seconds since the cursor last moved — drives the emission ramp-down.
+    idle: f32,
 }
 
 impl Default for Sparkles {
     fn default() -> Self {
-        Self { list: Vec::new(), acc: 0.0 }
+        Self { list: Vec::new(), acc: 0.0, idle: 0.0 }
     }
 }
 
@@ -681,8 +696,15 @@ impl Effect for Sparkles {
             return;
         }
 
+        // Same emission ramp-down as bubbles.
         if ctx.moving > 0.5 {
-            self.acc += c.rate.max(0.0) * ctx.dt;
+            self.idle = 0.0;
+        } else {
+            self.idle += ctx.dt;
+        }
+        let ramp = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
+        if ramp > 0.0 {
+            self.acc += c.rate.max(0.0) * ctx.dt * ramp;
         }
         while self.acc >= 1.0 {
             self.acc -= 1.0;
