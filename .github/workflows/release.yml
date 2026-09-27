@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --release
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MouseTrails-${{ github.sha }}
+          path: target/release/MouseTrails.exe
+          if-no-files-found: error
+
+      - name: Update rolling "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: |
+            Automated build of `main` @ ${{ github.sha }}.
+
+            Download **MouseTrails.exe** — a single self-contained file
+            (static CRT, icon embedded). No installer needed: copy it
+            anywhere and run it. Settings live in `%APPDATA%\MouseTrails`.
+          files: target/release/MouseTrails.exe
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
