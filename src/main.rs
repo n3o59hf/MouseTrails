@@ -57,5 +57,8 @@ fn main() {
         settings: RwLock::new(settings::Settings::load()),
     });
 
-    overlay::run(shared, want_settings);
+    // First launch (no config yet): every effect is on by default — open the
+    // settings window right away so the user sees what they can play with.
+    let first_run = !settings::config_exists();
+    overlay::run(shared, want_settings || first_run);
 }

@@ -73,7 +73,7 @@ pub struct SparkleCfg {
 impl Default for SparkleCfg {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             rate: 18.0,
             size: 4.0,
             gravity: -30.0,
@@ -115,6 +115,9 @@ pub struct Settings {
     pub sparkles: SparkleCfg,
     pub ripples: RippleCfg,
     pub render_fps: u32,
+    /// Whether the "how to find me in the tray" hint was shown after the
+    /// user closed the settings window for the first time.
+    pub tray_hint_shown: bool,
 }
 
 impl Default for Settings {
@@ -125,6 +128,7 @@ impl Default for Settings {
             sparkles: SparkleCfg::default(),
             ripples: RippleCfg::default(),
             render_fps: 60,
+            tray_hint_shown: false,
         }
     }
 }
@@ -151,10 +155,26 @@ impl Settings {
     }
 }
 
-fn config_path() -> PathBuf {
+pub fn config_path() -> PathBuf {
     std::env::var("APPDATA")
         .map(|d| PathBuf::from(d).join("MouseTrails").join("config.json"))
         .unwrap_or_else(|_| std::env::temp_dir().join("MouseTrails-config.json"))
+}
+
+/// True when no config file exists yet (i.e. this is the first launch).
+pub fn config_exists() -> bool {
+    config_path().exists()
+}
+
+pub fn tray_hint_shown() -> bool {
+    Settings::load().tray_hint_shown
+}
+
+/// Mark the first-close tray hint as shown and persist it.
+pub fn set_tray_hint_shown() {
+    let mut s = Settings::load();
+    s.tray_hint_shown = true;
+    s.save();
 }
 
 /// State shared between the overlay thread (main) and the settings UI thread.

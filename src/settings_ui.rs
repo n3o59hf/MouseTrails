@@ -3,6 +3,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 use eframe::egui;
+use windows::core::w;
 
 use crate::icon;
 use crate::settings::{self, Settings, TrailStyle};
@@ -95,6 +96,25 @@ fn run_ui(shared: Arc<settings::SharedSettings>, rx: Receiver<UiMsg>) {
         options,
         Box::new(move |_cc| Ok(Box::new(app) as Box<dyn eframe::App>)),
     );
+
+    // The first time ever that the settings window is closed, tell the user
+    // where MouseTrails lives from now on.
+    if !settings::tray_hint_shown() {
+        settings::set_tray_hint_shown();
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_TOPMOST};
+            let _ = MessageBoxW(
+                None,
+                w!(
+                    "MouseTrails keeps running in your system tray, near the clock.\n\n\
+                     Left-click the tray icon to open Settings again.\n\
+                     Right-click it for more options \u{2014} including Exit."
+                ),
+                w!("MouseTrails"),
+                MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST,
+            );
+        }
+    }
 }
 
 struct SettingsApp {
