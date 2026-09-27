@@ -550,7 +550,10 @@ impl App {
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32().min(0.1);
         self.last_tick = now;
-        self.clock += dt;
+        // One monotonic clock shared with the cursor sampler — accumulating
+        // clamped dt here would drift trail aging on any tick slower than
+        // 100ms.
+        self.clock = self.t0.elapsed().as_secs_f32();
 
         let cfg = self.shared.settings.read().unwrap().clone();
 
