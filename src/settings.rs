@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -180,4 +180,10 @@ pub fn set_tray_hint_shown() {
 /// State shared between the overlay thread (main) and the settings UI thread.
 pub struct SharedSettings {
     pub settings: RwLock<Settings>,
+    /// Self-update status, written by the updater's check threads and read by
+    /// the tray menu and settings window.
+    pub update: Mutex<crate::updater::UpdateState>,
+    /// HWND of the overlay window (as isize), set once at creation. The
+    /// settings thread uses it to ask the overlay to exit during updates.
+    pub overlay_hwnd: std::sync::atomic::AtomicIsize,
 }

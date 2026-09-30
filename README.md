@@ -61,7 +61,19 @@ The app starts minimized to the tray (it may be inside the `^` overflow next
 to the clock — drag it onto the taskbar to pin it there):
 
 - **Left-click** the tray icon — open Settings.
-- **Right-click** — menu: *Open Settings…*, *Start with Windows*, *Exit*.
+- **Right-click** — menu: *Open Settings…*, *Check for updates* / *Install
+  update*, *Start with Windows*, *Exit*.
+
+### Self-updating
+
+MouseTrails checks the rolling [latest
+release](https://github.com/n3o59hf/MouseTrails/releases/tag/latest) at
+startup and every 6 hours (plus on demand from the tray menu or Settings →
+Updates). When a newer build is published, one click downloads it, verifies
+its SHA-256 checksum, swaps the exe in place and restarts — no installer, no
+manual download. The previous binary is kept next to the exe as
+`MouseTrails.prev.exe` until the next update. Updates are always explicit;
+nothing is installed silently.
 
 Settings are stored in `%APPDATA%\MouseTrails\config.json`.
 

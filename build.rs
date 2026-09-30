@@ -1,8 +1,42 @@
-//! Embeds the application icon (and basic file metadata) into the exe.
+//! Embeds the application icon, basic file metadata, and the build identity
+//! (git SHA + commit date) that the self-updater compares against releases.
 use std::env;
 use std::path::Path;
+use std::process::Command;
 
 fn main() {
+    // Build identity for the self-updater. CI passes the exact commit SHA via
+    // MOUSETRAILS_GIT_SHA; local builds fall back to git.
+    let sha = env::var("MOUSETRAILS_GIT_SHA").ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(7).collect())
+        .or_else(|| {
+            Command::new("git").args(["rev-parse", "--short=7", "HEAD"]).output().ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        })
+        .unwrap_or_else(|| "dev".into());
+    let date = env::var("MOUSETRAILS_BUILD_DATE").ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            Command::new("git").args(["log", "-1", "--format=%cI"]).output().ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        })
+        .unwrap_or_else(|| "unknown".into());
+    let ts = env::var("MOUSETRAILS_BUILD_TS").ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            Command::new("git").args(["log", "-1", "--format=%ct"]).output().ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        })
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0);
+    println!("cargo:rustc-env=MOUSETRAILS_BUILD_SHA={sha}");
+    println!("cargo:rustc-env=MOUSETRAILS_BUILD_DATE={date}");
+    println!("cargo:rustc-env=MOUSETRAILS_BUILD_TS={ts}");
+
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rerun-if-changed=assets/mousetrails.ico");
         let mut res = winresource::WindowsResource::new();

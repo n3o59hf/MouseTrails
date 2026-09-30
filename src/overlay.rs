@@ -24,6 +24,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::effects::{self, Effects};
+use crate::updater;
 use crate::settings::SharedSettings;
 use crate::settings_ui::SettingsUiManager;
 use crate::startup;
@@ -34,6 +35,8 @@ const WM_APP_TRAY: u32 = WM_APP + 1;
 const ID_SETTINGS: u32 = 1;
 const ID_STARTUP: u32 = 2;
 const ID_EXIT: u32 = 3;
+const ID_UPDATE_CHECK: u32 = 4;
+const ID_UPDATE_INSTALL: u32 = 5;
 
 // Diagnostics, enabled via MOUSETRAILS_DEBUG / MOUSETRAILS_DUMP env vars.
 pub(crate) fn debug_log(line: String) {
@@ -270,24 +273,113 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 }
 
 fn show_tray_menu() {
-    let (hwnd, menu) = APP.with(|slot| {
+    let (hwnd, update_available) = APP.with(|slot| {
         let guard = slot.borrow();
         match guard.as_ref() {
-            Some(app) => (app.hwnd, app.hmenu),
-            None => (HWND::default(), HMENU::default()),
+            Some(app) => {
+                let sha = app.shared.update.lock().unwrap().available_sha.clone();
+                (app.hwnd, sha)
+            }
+            None => (HWND::default(), None),
         }
     });
-    if menu.is_invalid() {
+    if hwnd.is_invalid() {
         return;
     }
     unsafe {
         let _ = SetForegroundWindow(hwnd);
+        // Rebuild per show so the update items reflect the current state.
+        let menu = CreatePopupMenu().expect("CreatePopupMenu");
+        let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS as usize, w!("Open Settings..."));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        if let Some(sha) = &update_available {
+            let label = updater::wide(&format!("Install update ({sha})"));
+            let _ = AppendMenuW(menu, MF_STRING, ID_UPDATE_INSTALL as usize, PCWSTR(label.as_ptr()));
+        }
+        let _ = AppendMenuW(menu, MF_STRING, ID_UPDATE_CHECK as usize, w!("Check for updates"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_STARTUP as usize, w!("Start with Windows"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, ID_EXIT as usize, w!("Exit"));
+        let _ = SetMenuDefaultItem(menu, ID_SETTINGS, 0);
         let check = if startup::is_enabled() { MF_CHECKED } else { MF_UNCHECKED };
         let _ = CheckMenuItem(menu, ID_STARTUP, (MF_BYCOMMAND | check).0);
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
         let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, None);
+        let _ = DestroyMenu(menu);
         let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
+    }
+}
+
+/// Background worker: checks GitHub on startup and then every 6 hours,
+/// updating the shared status for the tray and settings window.
+fn spawn_auto_check(shared: Arc<SharedSettings>) {
+    std::thread::Builder::new()
+        .name("update-autocheck".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(90));
+            loop {
+                match updater::check_remote() {
+                    Ok(remote) => {
+                        updater::record_check(&shared, &remote);
+                    }
+                    Err(e) => {
+                        shared.update.lock().unwrap().status = format!("Update check failed: {e}");
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+            }
+        })
+        .ok();
+}
+
+/// "Check for updates" from the tray: runs off the UI thread and reports via
+/// a message box, offering to install when an update is available.
+fn check_and_prompt(shared: Arc<SharedSettings>) {
+    let result = updater::check_remote();
+    let (text, flags, offer_install) = match &result {
+        Ok(remote) => {
+            let available = updater::record_check(&shared, remote);
+            if available {
+                (
+                    format!(
+                        "Update available: build {} ({}).\n\nInstall and restart MouseTrails now?",
+                        remote.sha, remote.date
+                    ),
+                    MB_YESNO | MB_ICONQUESTION,
+                    true,
+                )
+            } else {
+                (
+                    format!(
+                        "MouseTrails is up to date (build {} from {}).\n\nRemote: build {} ({}).",
+                        updater::build_sha(),
+                        updater::build_date(),
+                        remote.sha,
+                        remote.date
+                    ),
+                    MB_OK | MB_ICONINFORMATION,
+                    false,
+                )
+            }
+        }
+        Err(e) => (
+            format!("Update check failed:\n{e}"),
+            MB_OK | MB_ICONWARNING,
+            false,
+        ),
+    };
+    let wide = updater::wide(&text);
+    unsafe {
+        let choice = MessageBoxW(
+            HWND::default(),
+            PCWSTR(wide.as_ptr()),
+            w!("MouseTrails"),
+            flags | MB_SETFOREGROUND | MB_TOPMOST,
+        );
+        if offer_install && choice.0 == 6 {
+            crate::updater::spawn_install(shared);
+        }
     }
 }
 
@@ -317,7 +409,6 @@ struct App {
     prev_left: bool,
 
     hicon: HICON,
-    hmenu: HMENU,
 
     dump_counter: u32,
     t0: Instant,
@@ -348,7 +439,6 @@ impl App {
             vel: (0.0, 0.0),
             prev_left: false,
             hicon: HICON::default(),
-            hmenu: HMENU::default(),
             dump_counter: 0,
             t0: Instant::now(),
             sampler: None,
@@ -360,8 +450,11 @@ impl App {
         self.load_buffers();
         self.create_icon();
         self.add_tray_icon();
-        self.build_menu();
         self.sampler = Some(Sampler::start(self.t0));
+        self.shared
+            .overlay_hwnd
+            .store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
+        spawn_auto_check(self.shared.clone());
         unsafe {
             SetTimer(self.hwnd, TIMER_ID, self.timer_period, None);
         }
@@ -467,19 +560,6 @@ impl App {
         }
     }
 
-    fn build_menu(&mut self) {
-        unsafe {
-            let menu = CreatePopupMenu().expect("CreatePopupMenu");
-            let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS as usize, w!("Open Settings..."));
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let _ = AppendMenuW(menu, MF_STRING, ID_STARTUP as usize, w!("Start with Windows"));
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let _ = AppendMenuW(menu, MF_STRING, ID_EXIT as usize, w!("Exit"));
-            let _ = SetMenuDefaultItem(menu, ID_SETTINGS, 0);
-            self.hmenu = menu;
-        }
-    }
-
     fn tray_event(&mut self, lparam: LPARAM) -> TrayAction {
         match lparam.0 as u32 {
             WM_RBUTTONUP => TrayAction::ShowMenu,
@@ -496,6 +576,18 @@ impl App {
         match id {
             ID_SETTINGS => {
                 self.ui.open(&self.shared);
+                TrayAction::None
+            }
+            ID_UPDATE_CHECK => {
+                let shared = self.shared.clone();
+                std::thread::Builder::new()
+                    .name("update-check".into())
+                    .spawn(move || check_and_prompt(shared))
+                    .ok();
+                TrayAction::None
+            }
+            ID_UPDATE_INSTALL => {
+                updater::spawn_install(self.shared.clone());
                 TrayAction::None
             }
             ID_STARTUP => {
@@ -538,9 +630,6 @@ impl App {
             }
             if !self.hicon.is_invalid() {
                 let _ = DestroyIcon(self.hicon);
-            }
-            if !self.hmenu.is_invalid() {
-                let _ = DestroyMenu(self.hmenu);
             }
             PostQuitMessage(0);
         }

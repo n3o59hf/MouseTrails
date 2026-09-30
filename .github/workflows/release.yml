@@ -25,6 +25,8 @@ jobs:
 
       - name: Build release
         run: cargo build --release
+        env:
+          MOUSETRAILS_GIT_SHA: ${{ github.sha }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -32,6 +34,12 @@ jobs:
           name: MouseTrails-${{ github.sha }}
           path: target/release/MouseTrails.exe
           if-no-files-found: error
+
+      - name: Generate checksum
+        run: |
+          $hash = (Get-FileHash target/release/MouseTrails.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  MouseTrails.exe" | Out-File -Encoding ascii target/release/MouseTrails.exe.sha256
+          Get-Content target/release/MouseTrails.exe.sha256
 
       - name: Move "latest" tag to this commit
         run: |
@@ -51,7 +59,12 @@ jobs:
             Download **MouseTrails.exe** — a single self-contained file
             (static CRT, icon embedded). No installer needed: copy it
             anywhere and run it. Settings live in `%APPDATA%\MouseTrails`.
-          files: target/release/MouseTrails.exe
+
+            The app checks for updates from the tray menu (right-click the
+            rainbow icon) or in Settings — Updates.
+          files: |
+            target/release/MouseTrails.exe
+            target/release/MouseTrails.exe.sha256
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -260,6 +260,34 @@ impl eframe::App for SettingsApp {
                             .suffix(" fps"),
                     );
                 });
+                ui.add_space(6.0);
+                let (status, available) = {
+                    let st = self.shared.update.lock().unwrap();
+                    (st.status.clone(), st.available_sha.is_some())
+                };
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Updates").strong());
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} (build {}, {})",
+                            status,
+                            crate::updater::build_sha(),
+                            crate::updater::build_date()
+                        ))
+                        .small(),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Check now").clicked() {
+                            crate::updater::spawn_check(self.shared.clone());
+                        }
+                        if ui
+                            .add_enabled(available, egui::Button::new("Install and restart"))
+                            .clicked()
+                        {
+                            crate::updater::spawn_install(self.shared.clone());
+                        }
+                    });
+                });
             });
         });
 
