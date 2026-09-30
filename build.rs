@@ -24,18 +24,8 @@ fn main() {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         })
         .unwrap_or_else(|| "unknown".into());
-    let ts = env::var("MOUSETRAILS_BUILD_TS").ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            Command::new("git").args(["log", "-1", "--format=%ct"]).output().ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        })
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(0);
     println!("cargo:rustc-env=MOUSETRAILS_BUILD_SHA={sha}");
     println!("cargo:rustc-env=MOUSETRAILS_BUILD_DATE={date}");
-    println!("cargo:rustc-env=MOUSETRAILS_BUILD_TS={ts}");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rerun-if-changed=assets/mousetrails.ico");

@@ -33,35 +33,6 @@ pub fn build_date() -> &'static str {
     env!("MOUSETRAILS_BUILD_DATE")
 }
 
-pub fn build_ts() -> i64 {
-    // Parsed at compile time from the %ct seconds embedded by build.rs.
-    const TS: &str = env!("MOUSETRAILS_BUILD_TS");
-    TS.parse().unwrap_or(0)
-}
-
-/// Parses GitHub's fixed-format UTC timestamp ("2026-09-27T17:03:00Z") into
-/// unix seconds. Days-from-civil algorithm; valid for the foreseeable future.
-fn iso_to_unix(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
-    if b.len() != 20 || b[4] != b'-' || b[7] != b'-' || (b[10] != b'T' && b[10] != b' ') || b[13] != b':' || b[16] != b':' || b[19] != b'Z' {
-        return None;
-    }
-    let num = |a: usize, z: usize| -> Option<i64> {
-        s.get(a..z)?.parse::<i64>().ok()
-    };
-    let (y, m, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
-    let (hh, mm, ss) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
-    // Howard Hinnant's days_from_civil.
-    let y = y - if m <= 2 { 1 } else { 0 };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    Some(days * 86400 + hh * 3600 + mm * 60 + ss)
-}
-
 /// Shared, thread-safe status shown in the settings window and tray.
 #[derive(Default)]
 pub struct UpdateState {
@@ -216,24 +187,18 @@ pub fn check_remote() -> Result<RemoteBuild, String> {
     Ok(RemoteBuild { sha, date })
 }
 
-/// A remote build counts as an update when its SHA differs from ours and its
-/// commit time is strictly newer, compared as unix seconds (string dates
-/// would misorder across timezones). Prevents "downgrading".
-pub fn is_newer(remote: &RemoteBuild) -> bool {
-    let mine = build_ts();
-    if mine == 0 {
-        return false; // local dev build without git info — never self-update
-    }
-    match iso_to_unix(&remote.date) {
-        Some(remote_ts) => remote.sha != build_sha() && remote_ts > mine,
-        None => false,
-    }
+/// A remote build is an update when its commit SHA differs from ours. The
+/// workflow force-moves `latest` to the tip of main on every push, so a
+/// differing SHA means the release is newer; local builds without git info
+/// ("dev") never self-update.
+pub fn is_update_available(remote: &RemoteBuild) -> bool {
+    build_sha() != "dev" && remote.sha != build_sha()
 }
 
 /// Records a check result into the shared status. Returns whether an update
 /// is available.
 pub fn record_check(shared: &crate::settings::SharedSettings, remote: &RemoteBuild) -> bool {
-    let available = is_newer(remote);
+    let available = is_update_available(remote);
     let mut st = shared.update.lock().unwrap();
     if available {
         st.status = format!("Update available: build {} ({})", remote.sha, remote.date);
