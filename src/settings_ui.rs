@@ -369,7 +369,7 @@ fn bubbles_section(ui: &mut egui::Ui, s: &mut Settings) {
         ui.checkbox(&mut s.bubbles.enabled, "Bubbles");
         ui.label(
             egui::RichText::new(
-                "Soap bubbles drift up from the cursor — more when you move fast, a gentle trickle at rest. Click to blast them outward.",
+                "Soap bubbles drift up from the cursor — more when you move fast, fewer when you drift slowly. Click to blast them outward.",
             )
             .small()
             .weak(),

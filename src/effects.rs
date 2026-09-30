@@ -489,13 +489,23 @@ pub struct Bubbles {
     list: Vec<Bubble>,
     acc: f32,
     next_hue: usize,
-    /// Smoothed speed-dependent emission multiplier (1/3 idle … 1 at speed).
+    /// Smoothed speed-dependent emission multiplier (1/3 slow … 1 at speed).
     speed_mod: f32,
+    /// Seconds since the cursor last moved — fades emission out entirely
+    /// when the cursor is fully stationary (speed modulation only applies
+    /// while it actually moves).
+    idle: f32,
 }
 
 impl Default for Bubbles {
     fn default() -> Self {
-        Self { list: Vec::new(), acc: 0.0, next_hue: 0, speed_mod: IDLE_RATE_FRACTION }
+        Self {
+            list: Vec::new(),
+            acc: 0.0,
+            next_hue: 0,
+            speed_mod: IDLE_RATE_FRACTION,
+            idle: 0.0,
+        }
     }
 }
 
@@ -514,10 +524,11 @@ impl Effect for Bubbles {
             return;
         }
 
-        // Emission scales with cursor speed: a third of the configured rate
-        // while idle or drifting slowly, the full rate during real movement.
-        // Ramps up fast when the cursor accelerates and relaxes a bit more
-        // slowly when it slows down — bubbles keep trickling even at rest.
+        // Emission scales with cursor speed while the cursor is moving: a
+        // third of the configured rate for slow drift, the full rate for real
+        // movement, ramping up fast on acceleration and relaxing more slowly.
+        // A fully stationary cursor fades out over EMISSION_RAMP_DOWN_SECS,
+        // like the sparkles.
         let speed = (ctx.vel.0 * ctx.vel.0 + ctx.vel.1 * ctx.vel.1).sqrt();
         let target = IDLE_RATE_FRACTION
             + (1.0 - IDLE_RATE_FRACTION)
@@ -525,7 +536,15 @@ impl Effect for Bubbles {
                     .clamp(0.0, 1.0);
         let k = if target > self.speed_mod { 16.0 } else { 5.0 };
         self.speed_mod += (target - self.speed_mod) * (1.0 - (-k * ctx.dt).exp());
-        self.acc += c.rate.max(0.0) * ctx.dt * self.speed_mod;
+
+        if ctx.moving > 0.5 {
+            self.idle = 0.0;
+        } else {
+            self.idle += ctx.dt;
+        }
+        let fade = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
+
+        self.acc += c.rate.max(0.0) * ctx.dt * self.speed_mod * fade;
         while self.acc >= 1.0 {
             self.acc -= 1.0;
             if self.list.len() < 90 {
@@ -1039,20 +1058,38 @@ mod tests {
             clicked,
             moving,
             cfg: test_settings(),
-            screen: (3440.0, 1440.0),
+            // Generous bounds: emission tests must not lose bubbles to the
+            // cursor-plow flinging them off-screen.
+            screen: (10000.0, 10000.0),
         }
     }
 
     fn ctx_vel(mouse: (f32, f32), vel: (f32, f32)) -> Ctx<'static> {
+        ctx_at(0.5, mouse, vel, 30.0, false)
+    }
+
+    fn ctx_full(mouse: (f32, f32), vel: (f32, f32), moving: f32, clicked: bool) -> Ctx<'static> {
+        ctx_at(0.5, mouse, vel, moving, clicked)
+    }
+
+    fn ctx_at(
+        now: f32,
+        mouse: (f32, f32),
+        vel: (f32, f32),
+        moving: f32,
+        clicked: bool,
+    ) -> Ctx<'static> {
         Ctx {
             dt: 1.0 / 60.0,
-            now: 0.5,
+            now,
             mouse,
             vel,
-            clicked: false,
-            moving: 0.0,
+            clicked,
+            moving,
             cfg: test_settings(),
-            screen: (3440.0, 1440.0),
+            // Generous bounds: emission tests must not lose bubbles to the
+            // cursor-plow flinging them off-screen.
+            screen: (10000.0, 10000.0),
         }
     }
 
@@ -1099,7 +1136,7 @@ mod tests {
         let mut b = Bubbles::default();
         assert!(
             (b.speed_mod - IDLE_RATE_FRACTION).abs() < 1e-6,
-            "starts at the idle fraction"
+            "starts at the slow fraction"
         );
         // ~100ms of fast movement should ramp most of the way up.
         for _ in 0..12 {
@@ -1110,35 +1147,54 @@ mod tests {
             "should ramp up quickly, got {}",
             b.speed_mod
         );
-        // ~500ms idle should relax back near the idle fraction.
+        // ~500ms of stillness should relax back near the slow fraction.
         for _ in 0..60 {
             b.update(&ctx_vel((100.0, 100.0), (0.0, 0.0)));
         }
         assert!(
             b.speed_mod < 0.45,
-            "should relax to idle rate, got {}",
+            "should relax to the slow fraction, got {}",
             b.speed_mod
         );
     }
 
     #[test]
-    fn idle_bubbles_keep_trickling_at_third_rate() {
-        // 4s fully idle: steady-state population ≈ rate/3 × lifetime
-        // (9/3 × 2.4 ≈ 7) — clearly non-zero, clearly below the full-rate
-        // steady state (9 × 2.4 ≈ 22).
+    fn slow_drift_spawns_at_third_rate_and_stops_when_still() {
+        // Advance the clock per frame so lifetime culling works — with a
+        // frozen clock the empty-check below would race bubbles floating
+        // off-screen instead (CI caught that flake).
         let mut b = Bubbles::default();
+        let mut now = 0.5_f32;
+        let step = |now: &mut f32| *now += 1.0 / 60.0;
+
+        // 4s of slow drift (moving, ~100 px/s): steady state ≈ rate/3 ×
+        // lifetime (9/3 × 2.4 ≈ 7) — well below the full-rate state (≈22).
         for _ in 0..240 {
-            b.update(&ctx_vel((100.0, 100.0), (0.0, 0.0)));
+            step(&mut now);
+            b.update(&ctx_at(now, (5000.0, 5000.0), (100.0, 0.0), 2.0, false));
         }
         assert!(
             (3..=14).contains(&b.list.len()),
-            "idle population should hover around a third of full, got {}",
+            "slow-drift population should hover around a third of full, got {}",
+            b.list.len()
+        );
+
+        // 4s fully stopped: emission fades to zero and every bubble ages out
+        // (max lifetime 1.2 × 2.4s < 4s), so the list must be exactly empty.
+        for _ in 0..240 {
+            step(&mut now);
+            b.update(&ctx_at(now, (5000.0, 5000.0), (0.0, 0.0), 0.0, false));
+        }
+        assert!(
+            b.list.is_empty(),
+            "a stationary cursor must stop spawning bubbles entirely, got {}",
             b.list.len()
         );
 
         // 4s of fast movement for contrast: near the full steady state.
-        for _ in 0..240 {
-            b.update(&ctx_vel((100.0, 100.0), (2000.0, 0.0)));
+        for i in 0..240 {
+            step(&mut now);
+            b.update(&ctx_at(now, (5000.0, 5000.0), (2000.0, 0.0), 30.0, false));
         }
         assert!(
             b.list.len() > 14,
