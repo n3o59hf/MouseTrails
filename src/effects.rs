@@ -223,9 +223,16 @@ const SPACING_PX: f32 = 4.0;
 const TELEPORT_PX: f32 = 150.0;
 /// Cap on stored points (≈ path length / spacing).
 const TRAIL_MAX_POINTS: usize = 1024;
-/// After the cursor stops moving, bubble/sparkle emission fades out over
-/// this many seconds instead of cutting off instantly.
+/// After the cursor stops moving, sparkle emission fades out over this many
+/// seconds instead of cutting off instantly. (Bubbles instead slow to a
+/// constant idle rate — see the speed modulation below.)
 const EMISSION_RAMP_DOWN_SECS: f32 = 0.5;
+/// Fraction of the configured bubble rate used while the cursor is idle.
+const IDLE_RATE_FRACTION: f32 = 1.0 / 3.0;
+/// Cursor speeds (px/s) between which the bubble rate interpolates from the
+/// idle fraction to the full configured rate.
+const SLOW_CURSOR_PX_S: f32 = 150.0;
+const FAST_CURSOR_PX_S: f32 = 700.0;
 /// Clicks shove bubbles within this range outward from the click point.
 const SHOCKWAVE_RADIUS: f32 = 240.0;
 
@@ -482,13 +489,13 @@ pub struct Bubbles {
     list: Vec<Bubble>,
     acc: f32,
     next_hue: usize,
-    /// Seconds since the cursor last moved — drives the emission ramp-down.
-    idle: f32,
+    /// Smoothed speed-dependent emission multiplier (1/3 idle … 1 at speed).
+    speed_mod: f32,
 }
 
 impl Default for Bubbles {
     fn default() -> Self {
-        Self { list: Vec::new(), acc: 0.0, next_hue: 0, idle: 0.0 }
+        Self { list: Vec::new(), acc: 0.0, next_hue: 0, speed_mod: IDLE_RATE_FRACTION }
     }
 }
 
@@ -507,17 +514,18 @@ impl Effect for Bubbles {
             return;
         }
 
-        // Emissions ramp down over EMISSION_RAMP_DOWN_SECS once the cursor
-        // stops moving, instead of cutting off instantly.
-        if ctx.moving > 0.5 {
-            self.idle = 0.0;
-        } else {
-            self.idle += ctx.dt;
-        }
-        let ramp = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
-        if ramp > 0.0 {
-            self.acc += c.rate.max(0.0) * ctx.dt * ramp;
-        }
+        // Emission scales with cursor speed: a third of the configured rate
+        // while idle or drifting slowly, the full rate during real movement.
+        // Ramps up fast when the cursor accelerates and relaxes a bit more
+        // slowly when it slows down — bubbles keep trickling even at rest.
+        let speed = (ctx.vel.0 * ctx.vel.0 + ctx.vel.1 * ctx.vel.1).sqrt();
+        let target = IDLE_RATE_FRACTION
+            + (1.0 - IDLE_RATE_FRACTION)
+                * ((speed - SLOW_CURSOR_PX_S) / (FAST_CURSOR_PX_S - SLOW_CURSOR_PX_S))
+                    .clamp(0.0, 1.0);
+        let k = if target > self.speed_mod { 16.0 } else { 5.0 };
+        self.speed_mod += (target - self.speed_mod) * (1.0 - (-k * ctx.dt).exp());
+        self.acc += c.rate.max(0.0) * ctx.dt * self.speed_mod;
         while self.acc >= 1.0 {
             self.acc -= 1.0;
             if self.list.len() < 90 {
@@ -1035,6 +1043,19 @@ mod tests {
         }
     }
 
+    fn ctx_vel(mouse: (f32, f32), vel: (f32, f32)) -> Ctx<'static> {
+        Ctx {
+            dt: 1.0 / 60.0,
+            now: 0.5,
+            mouse,
+            vel,
+            clicked: false,
+            moving: 0.0,
+            cfg: test_settings(),
+            screen: (3440.0, 1440.0),
+        }
+    }
+
     fn test_settings() -> &'static Settings {
         // Defaults are small consts; a leaked static keeps the borrow simple.
         Box::leak(Box::new(Settings::default()))
@@ -1074,22 +1095,79 @@ mod tests {
     }
 
     #[test]
-    fn emission_ramps_down_then_stops_after_idle() {
+    fn bubble_rate_ramps_with_cursor_speed() {
         let mut b = Bubbles::default();
-        // Cursor idle: ramp allows a burst of spawns, then they must stop.
-        for _ in 0..30 {
-            b.update(&ctx((100.0, 100.0), false, 0.0));
+        assert!(
+            (b.speed_mod - IDLE_RATE_FRACTION).abs() < 1e-6,
+            "starts at the idle fraction"
+        );
+        // ~100ms of fast movement should ramp most of the way up.
+        for _ in 0..12 {
+            b.update(&ctx_vel((100.0, 100.0), (2000.0, 0.0)));
         }
-        let after_ramp = b.list.len();
-        assert!(after_ramp > 0, "ramp should still emit briefly, got 0");
+        assert!(
+            b.speed_mod > 0.75,
+            "should ramp up quickly, got {}",
+            b.speed_mod
+        );
+        // ~500ms idle should relax back near the idle fraction.
+        for _ in 0..60 {
+            b.update(&ctx_vel((100.0, 100.0), (0.0, 0.0)));
+        }
+        assert!(
+            b.speed_mod < 0.45,
+            "should relax to idle rate, got {}",
+            b.speed_mod
+        );
+    }
 
-        for _ in 0..90 {
-            b.update(&ctx((100.0, 100.0), false, 0.0));
+    #[test]
+    fn idle_bubbles_keep_trickling_at_third_rate() {
+        // 4s fully idle: steady-state population ≈ rate/3 × lifetime
+        // (9/3 × 2.4 ≈ 7) — clearly non-zero, clearly below the full-rate
+        // steady state (9 × 2.4 ≈ 22).
+        let mut b = Bubbles::default();
+        for _ in 0..240 {
+            b.update(&ctx_vel((100.0, 100.0), (0.0, 0.0)));
         }
-        assert_eq!(
-            b.list.len(),
-            after_ramp,
-            "no further spawns once the ramp finished"
+        assert!(
+            (3..=14).contains(&b.list.len()),
+            "idle population should hover around a third of full, got {}",
+            b.list.len()
+        );
+
+        // 4s of fast movement for contrast: near the full steady state.
+        for _ in 0..240 {
+            b.update(&ctx_vel((100.0, 100.0), (2000.0, 0.0)));
+        }
+        assert!(
+            b.list.len() > 14,
+            "fast movement should reach the full-rate population, got {}",
+            b.list.len()
+        );
+    }
+
+    #[test]
+    fn sparkles_stop_after_idle() {
+        let mut s = Sparkles::default();
+        // Moving: spawns happen.
+        for _ in 0..30 {
+            s.update(&ctx((100.0, 100.0), false, 30.0));
+        }
+        let while_moving = s.list.len();
+        assert!(while_moving > 0);
+
+        // Idle past the ramp window: no further spawns.
+        for _ in 0..90 {
+            s.update(&ctx((100.0, 100.0), false, 0.0));
+        }
+        let after_idle = s.list.len();
+        for _ in 0..30 {
+            s.update(&ctx((100.0, 100.0), false, 0.0));
+        }
+        assert!(
+            s.list.len() <= after_idle,
+            "no new sparkles once the ramp finished"
         );
     }
 }
