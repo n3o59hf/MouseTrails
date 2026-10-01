@@ -403,6 +403,7 @@ struct App {
     clock: f32,
     timer_period: u32,
     metric_checks: u32,
+    last_topmost_assert: Instant,
 
     mouse: (f32, f32),
     vel: (f32, f32),
@@ -435,6 +436,7 @@ impl App {
             clock: 0.0,
             timer_period: 15,
             metric_checks: 0,
+            last_topmost_assert: Instant::now(),
             mouse: (0.0, 0.0),
             vel: (0.0, 0.0),
             prev_left: false,
@@ -660,6 +662,25 @@ impl App {
         if self.metric_checks >= 180 {
             self.metric_checks = 0;
             self.on_display_change();
+        }
+
+        // Windows sometimes demotes the overlay's z-position below ordinary
+        // app windows while leaving WS_EX_TOPMOST set (observed after other
+        // windows activate) — re-assert topmost periodically so the effects
+        // stay on top. A no-op when already seated correctly.
+        if self.last_topmost_assert.elapsed() >= std::time::Duration::from_secs(1) {
+            self.last_topmost_assert = now;
+            unsafe {
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
         }
 
         let mut pt = POINT::default();
