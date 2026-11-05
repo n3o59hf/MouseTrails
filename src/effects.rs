@@ -634,7 +634,10 @@ impl Effect for Trail {
         if !c.enabled || self.pts.is_empty() {
             return None;
         }
-        let pad = c.width.value() * 1.4 + 6.0;
+        // The Neon (2.4×) and Soft (2.15×) halos are wider than the core
+        // stroke — the pad must cover the widest, or style switches leave
+        // stuck glow slivers.
+        let pad = c.width.value() * 2.5 + 6.0;
         let mut b = RectF::point(self.pts.front().unwrap().x, self.pts.front().unwrap().y, pad);
         for p in &self.pts {
             b.merge(RectF::point(p.x, p.y, pad));
@@ -1447,8 +1450,11 @@ impl Effect for Ripples {
         let mut b: Option<RectF> = None;
         for r in &self.list {
             let max_radius = c.speed * (c.lifetime + (c.rings.saturating_sub(1)) as f32 * 0.12);
-            // Generous pad: glow pass is 2.2× the core width.
-            let rect = RectF::point(r.x, r.y, max_radius + c.width * 3.0 + 6.0);
+            // Wobble lobes reach max_radius * (1 + wobble); the glow pass is
+            // 2.2× and the flash 4× the core width. Anything narrower than
+            // that leaves stuck pixels when the ripple dies.
+            let wobble = c.wobble.clamp(0.0, 0.35);
+            let rect = RectF::point(r.x, r.y, max_radius * (1.0 + wobble) + c.width * 4.0 + 6.0);
             match &mut b {
                 Some(acc) => acc.merge(rect),
                 None => b = Some(rect),
@@ -1841,6 +1847,40 @@ mod tests {
         rp.render(&mut pm.as_mut(), cfg, 0.52);
         let painted = pm.data().chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(painted > 10, "click flash should paint pixels, got {}", painted);
+    }
+
+    #[test]
+    fn wobbled_ripple_bounds_cover_the_lobes() {
+        let mut s = EffectSettings::default();
+        s.ripples.wobble = 0.35;
+        let cfg: &'static EffectSettings = Box::leak(Box::new(s));
+        let mut rp = Ripples::default();
+        rp.list.push(Ripple { x: 500.0, y: 500.0, born: 0.0, phase: 0.0 });
+        let rect = rp.bounds(cfg).expect("bounds exist");
+        // Lobes reach max ring radius * (1 + wobble) at the end of life.
+        let lobes = cfg.ripples.speed * cfg.ripples.lifetime * (1.0 + 0.35);
+        assert!(
+            500.0 - rect.y0 >= lobes - 0.5,
+            "wobble lobes must stay inside the dirty rect, pad={}",
+            500.0 - rect.y0
+        );
+    }
+
+    #[test]
+    fn trail_bounds_cover_the_widest_style_halo() {
+        let mut s = EffectSettings::default();
+        s.trail.style = TrailStyle::Neon;
+        s.trail.width = NumOrExpr::Num(24.0);
+        let cfg: &'static EffectSettings = Box::leak(Box::new(s));
+        let mut t = Trail::default();
+        t.push_samples(vec![(100.0, 100.0, 0.0), (110.0, 100.0, 0.01)]);
+        t.update(&ctx_at(0.5, (110.0, 100.0), (0.0, 0.0), 0.0, false));
+        let rect = t.bounds(cfg).expect("bounds exist");
+        assert!(
+            rect.x0 <= 100.0 - 24.0 * 2.4 + 0.5,
+            "neon halo must fit inside the dirty rect, x0={}",
+            rect.x0
+        );
     }
 
     #[test]
