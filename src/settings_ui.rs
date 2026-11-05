@@ -764,6 +764,9 @@ fn profiles_group(
             .spacing([10.0, 10.0])
             .num_columns(GALLERY_COLS)
             .show(ui, |ui| {
+                // egui's Grid does not auto-wrap at num_columns — rows must
+                // be ended explicitly.
+                let mut placed = 0;
                 for card in cards {
                     let selected = app.theme == card.theme
                         && active_profile_in(app, &card.theme) == card.profile;
@@ -774,10 +777,18 @@ fn profiles_group(
                             card.profile.clone(),
                         ));
                     }
+                    placed += 1;
+                    if placed % GALLERY_COLS == 0 {
+                        ui.end_row();
+                    }
                 }
                 let plus = plus_tile(ui);
                 if plus.clicked() {
                     *dialog_open = true;
+                }
+                placed += 1;
+                if placed % GALLERY_COLS != 0 {
+                    ui.end_row();
                 }
             });
 
