@@ -117,6 +117,38 @@ fn hsv(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     }
 }
 
+/// Resolve the Soft style's (core, edge1, edge2) colors from the palette,
+/// falling back to a white core with pink/blue halos when unset.
+fn soft_colors(palette: &[[u8; 3]]) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let rgb3 = |c: &[u8; 3]| {
+        let (r, g, b) = rgb(c);
+        [r, g, b]
+    };
+    const CORE: [f32; 3] = [0.97, 0.98, 1.0];
+    const EDGE_A: [f32; 3] = [1.0, 0.72, 0.86];
+    const EDGE_B: [f32; 3] = [0.70, 0.82, 1.0];
+    match palette.len() {
+        0 => (CORE, EDGE_A, EDGE_B),
+        1 => (rgb3(&palette[0]), EDGE_A, EDGE_B),
+        2 => (rgb3(&palette[0]), rgb3(&palette[1]), EDGE_B),
+        _ => (rgb3(&palette[0]), rgb3(&palette[1]), rgb3(&palette[2])),
+    }
+}
+
+/// Pick the Striped style color for a point `arc` px behind the trail head:
+/// the palette cycles every `stripe_len` px, falling back to a red/green
+/// pairing when no palette is configured.
+fn stripe_color(palette: &[[u8; 3]], arc: f32, stripe_len: f32) -> (f32, f32, f32) {
+    const FALLBACK: [[u8; 3]; 2] = [[235, 60, 63], [64, 180, 90]];
+    if palette.len() == 1 {
+        return rgb(&palette[0]);
+    }
+    let colors: &[[u8; 3]] = if palette.len() >= 2 { palette } else { &FALLBACK };
+    let step = stripe_len.max(1.0);
+    let idx = (arc / step).floor() as i64;
+    rgb(&colors[idx.rem_euclid(colors.len() as i64) as usize])
+}
+
 fn add_circle(pb: &mut PathBuilder, x: f32, y: f32, r: f32) {
     let k = 0.5522847498 * r;
     pb.move_to(x + r, y);
@@ -450,6 +482,128 @@ impl Effect for Trail {
                         }
                     }
                 }
+            }
+            TrailStyle::Soft => {
+                let (core, edge_a, edge_b) = soft_colors(&c.palette);
+                for run in &runs {
+                    let m = run.len();
+                    for j in 1..m - 1 {
+                        let idx = run[j];
+                        let age = now - self.pts[idx].t;
+                        let k = (1.0 - age / len).clamp(0.0, 1.0);
+                        if k <= 0.0 {
+                            continue;
+                        }
+                        let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                        let start =
+                            if j == 1 { pt(run[0]) } else { mid(pt(run[j - 1]), pt(idx)) };
+                        let end = mid(pt(idx), pt(run[j + 1]));
+                        // Two wide tinted halos under a bright core: the outer
+                        // ring shows edge_a, the inner edge_b, the center core.
+                        stroke_quad(
+                            pm,
+                            start,
+                            pt(idx),
+                            end,
+                            width * 2.0,
+                            col(edge_a[0], edge_a[1], edge_a[2], 0.14 * k),
+                        );
+                        stroke_quad(
+                            pm,
+                            start,
+                            pt(idx),
+                            end,
+                            width * 1.45,
+                            col(edge_b[0], edge_b[1], edge_b[2], 0.20 * k),
+                        );
+                        stroke_quad(
+                            pm,
+                            start,
+                            pt(idx),
+                            end,
+                            width * 0.72,
+                            col(core[0], core[1], core[2], 0.9 * k),
+                        );
+                    }
+                    // Trailing tip from the last anchor to the final point.
+                    let li = *run.last().unwrap();
+                    if m >= 2 {
+                        let age = now - self.pts[li].t;
+                        let k = (1.0 - age / len).clamp(0.0, 1.0);
+                        if k > 0.0 {
+                            let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                            let start = mid(pt(run[m - 2]), pt(li));
+                            stroke_segment(
+                                pm,
+                                start.0,
+                                start.1,
+                                self.pts[li].x,
+                                self.pts[li].y,
+                                width * 0.72,
+                                col(core[0], core[1], core[2], 0.9 * k),
+                            );
+                        }
+                    }
+                }
+                // Crisp head right under the cursor, in the core color.
+                let head = self.pts.back().unwrap();
+                fill_circle(
+                    pm,
+                    head.x,
+                    head.y,
+                    (c.width * 0.35).max(1.5),
+                    col(core[0], core[1], core[2], 0.75),
+                );
+            }
+            TrailStyle::Striped => {
+                for run in &runs {
+                    let m = run.len();
+                    // Arc length measured back from the newest point, so
+                    // stripes stay anchored to the cursor end and extrude
+                    // behind it as the trail grows.
+                    let mut arc = vec![0.0f32; m];
+                    for j in (0..m - 1).rev() {
+                        let (ax, ay) = pt(run[j]);
+                        let (bx, by) = pt(run[j + 1]);
+                        arc[j] = arc[j + 1] + ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+                    }
+                    for j in 1..m - 1 {
+                        let idx = run[j];
+                        let age = now - self.pts[idx].t;
+                        let k = (1.0 - age / len).clamp(0.0, 1.0);
+                        if k <= 0.0 {
+                            continue;
+                        }
+                        let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                        let (r, g, b) = stripe_color(&c.palette, arc[j], c.stripe_len);
+                        let start =
+                            if j == 1 { pt(run[0]) } else { mid(pt(run[j - 1]), pt(idx)) };
+                        let end = mid(pt(idx), pt(run[j + 1]));
+                        stroke_quad(pm, start, pt(idx), end, width, col(r, g, b, 0.9 * k));
+                    }
+                    let li = *run.last().unwrap();
+                    if m >= 2 {
+                        let age = now - self.pts[li].t;
+                        let k = (1.0 - age / len).clamp(0.0, 1.0);
+                        if k > 0.0 {
+                            let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                            let (r, g, b) = stripe_color(&c.palette, arc[m - 1], c.stripe_len);
+                            let start = mid(pt(run[m - 2]), pt(li));
+                            stroke_segment(
+                                pm,
+                                start.0,
+                                start.1,
+                                self.pts[li].x,
+                                self.pts[li].y,
+                                width,
+                                col(r, g, b, 0.9 * k),
+                            );
+                        }
+                    }
+                }
+                // White head dot keeps the tip crisp, like Rainbow.
+                let head = self.pts.back().unwrap();
+                fill_circle(pm, head.x, head.y, (c.width * 0.35).max(1.5), col(1.0, 1.0, 1.0, 0.75));
             }
         }
     }
@@ -1225,5 +1379,68 @@ mod tests {
             s.list.len() <= after_idle,
             "no new sparkles once the ramp finished"
         );
+    }
+
+    #[test]
+    fn stripe_color_cycles_palette_and_falls_back() {
+        let pal = vec![[255, 0, 0], [0, 255, 0]];
+        let red = stripe_color(&pal, 0.0, 14.0);
+        let green = stripe_color(&pal, 14.0, 14.0);
+        let red_again = stripe_color(&pal, 28.0, 14.0);
+        assert!(red.0 > 0.99 && red.1 < 0.01, "first stripe takes palette[0]");
+        assert!(green.1 > 0.99 && green.0 < 0.01, "second stripe takes palette[1]");
+        assert!(red_again.0 > 0.99, "palette cycles every stripe_len px");
+
+        let one = stripe_color(&[[9, 9, 9]], 100.0, 14.0);
+        assert!(one.0 < 0.05 && one.1 < 0.05, "a single palette entry is constant");
+
+        let a = stripe_color(&[], 0.0, 14.0);
+        let b = stripe_color(&[], 14.0, 14.0);
+        assert!(a.0 > 0.8 && a.1 < 0.4, "empty palette falls back to red first");
+        assert!(b.1 > 0.6 && b.0 < 0.4, "empty palette cycles to green next");
+    }
+
+    #[test]
+    fn soft_colors_map_palette_roles() {
+        let (core, e1, e2) = soft_colors(&[[255, 255, 255], [255, 0, 0], [0, 0, 255]]);
+        assert!(core[0] > 0.99 && core[1] > 0.99, "core takes palette[0]");
+        assert!(e1[0] > 0.99 && e1[1] < 0.01, "edge1 takes palette[1]");
+        assert!(e2[2] > 0.99 && e2[0] < 0.01, "edge2 takes palette[2]");
+
+        let (core, _, _) = soft_colors(&[]);
+        assert!(core[0] > 0.9 && core[2] > 0.9, "empty palette falls back to a white core");
+
+        // Two entries: edge2 keeps the built-in blue.
+        let (_, e1, e2) = soft_colors(&[[255, 255, 255], [255, 0, 0]]);
+        assert!(e1[0] > 0.99 && e1[1] < 0.01);
+        assert!(e2[2] > 0.9 && e2[0] < 0.9);
+    }
+
+    #[test]
+    fn soft_and_striped_trails_render_pixels() {
+        for style in [TrailStyle::Soft, TrailStyle::Striped] {
+            let mut settings = Settings::default();
+            settings.trail.style = style;
+            settings.trail.length_secs = 1.0;
+            let cfg: &'static Settings = Box::leak(Box::new(settings));
+
+            let mut t = Trail::default();
+            t.push_samples(vec![(10.0, 50.0, 0.0), (30.0, 50.0, 0.02), (60.0, 50.0, 0.04)]);
+            let ctx = Ctx {
+                dt: 1.0 / 60.0,
+                now: 0.05,
+                mouse: (60.0, 50.0),
+                vel: (600.0, 0.0),
+                clicked: false,
+                moving: 30.0,
+                cfg,
+                screen: (100.0, 100.0),
+            };
+            t.update(&ctx);
+            let mut pm = tiny_skia::Pixmap::new(100, 100).unwrap();
+            t.render(&mut pm.as_mut(), cfg, 0.05);
+            let painted = pm.data().chunks_exact(4).filter(|p| p[3] > 0).count();
+            assert!(painted > 50, "{:?} trail should paint pixels, got {}", style, painted);
+        }
     }
 }

@@ -9,9 +9,13 @@ pub enum TrailStyle {
     Rainbow,
     Neon,
     Ghost,
+    /// Bright core with two soft tinted halos (Soft = [core, edge1, edge2]).
+    Soft,
+    /// Solid colors cycling along the trail every `stripe_len` px.
+    Striped,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrailCfg {
     pub enabled: bool,
@@ -20,6 +24,11 @@ pub struct TrailCfg {
     pub width: f32,
     pub hue_speed: f32,
     pub color: [u8; 3],
+    /// Style palette. Soft = [core, edge1, edge2]; Striped = cycling stripe
+    /// colors. Empty falls back to per-style defaults.
+    pub palette: Vec<[u8; 3]>,
+    /// Striped style: length of one stripe segment in px along the trail.
+    pub stripe_len: f32,
 }
 
 impl Default for TrailCfg {
@@ -31,6 +40,8 @@ impl Default for TrailCfg {
             width: 10.0,
             hue_speed: 1.0,
             color: [51, 217, 255],
+            palette: Vec::new(),
+            stripe_len: 14.0,
         }
     }
 }
@@ -107,7 +118,7 @@ impl Default for RippleCfg {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub trail: TrailCfg,
@@ -186,4 +197,37 @@ pub struct SharedSettings {
     /// HWND of the overlay window (as isize), set once at creation. The
     /// settings thread uses it to ask the overlay to exit during updates.
     pub overlay_hwnd: std::sync::atomic::AtomicIsize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trail_cfg_round_trips_palette() {
+        let cfg = TrailCfg {
+            palette: vec![[255, 255, 255], [255, 150, 200], [170, 200, 255]],
+            stripe_len: 18.0,
+            ..TrailCfg::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: TrailCfg = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn legacy_config_without_new_fields_loads() {
+        // A config written before palettes existed must still load, with the
+        // new fields falling back to their defaults.
+        let legacy = r#"{
+            "trail": {"enabled": true, "style": "rainbow", "length_secs": 0.55,
+                      "width": 10.0, "hue_speed": 1.0, "color": [51, 217, 255]},
+            "bubbles": {}, "sparkles": {}, "ripples": {},
+            "render_fps": 60, "tray_hint_shown": false
+        }"#;
+        let s: Settings = serde_json::from_str(legacy).unwrap();
+        assert_eq!(s.trail.style, TrailStyle::Rainbow);
+        assert!(s.trail.palette.is_empty());
+        assert_eq!(s.trail.stripe_len, 14.0);
+    }
 }

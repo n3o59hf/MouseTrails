@@ -328,11 +328,15 @@ fn trail_section(ui: &mut egui::Ui, s: &mut Settings) {
                         TrailStyle::Rainbow => "Rainbow ribbon",
                         TrailStyle::Neon => "Neon comet",
                         TrailStyle::Ghost => "Ghost fade",
+                        TrailStyle::Soft => "Soft glow",
+                        TrailStyle::Striped => "Candy stripes",
                     })
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut s.trail.style, TrailStyle::Rainbow, "Rainbow ribbon");
                         ui.selectable_value(&mut s.trail.style, TrailStyle::Neon, "Neon comet");
                         ui.selectable_value(&mut s.trail.style, TrailStyle::Ghost, "Ghost fade");
+                        ui.selectable_value(&mut s.trail.style, TrailStyle::Soft, "Soft glow");
+                        ui.selectable_value(&mut s.trail.style, TrailStyle::Striped, "Candy stripes");
                     });
             });
         });
@@ -359,7 +363,41 @@ fn trail_section(ui: &mut egui::Ui, s: &mut Settings) {
                         ui.color_edit_button_srgb(&mut s.trail.color);
                     });
                 }
+                TrailStyle::Soft | TrailStyle::Striped => {
+                    palette_row(ui, &mut s.trail.palette);
+                    if s.trail.style == TrailStyle::Striped {
+                        ui.add(
+                            egui::Slider::new(&mut s.trail.stripe_len, 6.0..=40.0)
+                                .text("Stripe length")
+                                .suffix(" px"),
+                        );
+                    }
+                }
             }
+        }
+    });
+}
+
+/// Editor for a palette: one color swatch per entry plus add/remove. An empty
+/// palette means the style's built-in default colors are used.
+fn palette_row(ui: &mut egui::Ui, palette: &mut Vec<[u8; 3]>) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Colors");
+        if palette.is_empty() {
+            ui.label(egui::RichText::new("(style default)").small().weak());
+        }
+        let mut remove: Option<usize> = None;
+        for (i, c) in palette.iter_mut().enumerate() {
+            ui.color_edit_button_srgb(c);
+            if ui.small_button("\u{2715}").clicked() {
+                remove = Some(i);
+            }
+        }
+        if ui.small_button("+").clicked() {
+            palette.push([200, 200, 200]);
+        }
+        if let Some(i) = remove {
+            palette.remove(i);
         }
     });
 }
