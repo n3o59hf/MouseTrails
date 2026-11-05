@@ -6,7 +6,7 @@ use eframe::egui;
 use windows::core::{w, PCWSTR};
 
 use crate::icon;
-use crate::settings::{self, Settings, TrailStyle};
+use crate::settings::{self, BubbleShape, Settings, TrailStyle};
 use crate::startup;
 
 pub enum UiMsg {
@@ -404,10 +404,25 @@ fn palette_row(ui: &mut egui::Ui, palette: &mut Vec<[u8; 3]>) {
 
 fn bubbles_section(ui: &mut egui::Ui, s: &mut Settings) {
     ui.group(|ui| {
-        ui.checkbox(&mut s.bubbles.enabled, "Bubbles");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.bubbles.enabled, "Bubbles");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                egui::ComboBox::from_id_source("bubble_shape")
+                    .selected_text(match s.bubbles.shape {
+                        BubbleShape::Bubble => "Soap bubbles",
+                        BubbleShape::Snowflake => "Snowflakes",
+                        BubbleShape::Ornament => "Ornament balls",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut s.bubbles.shape, BubbleShape::Bubble, "Soap bubbles");
+                        ui.selectable_value(&mut s.bubbles.shape, BubbleShape::Snowflake, "Snowflakes");
+                        ui.selectable_value(&mut s.bubbles.shape, BubbleShape::Ornament, "Ornament balls");
+                    });
+            });
+        });
         ui.label(
             egui::RichText::new(
-                "Soap bubbles drift up from the cursor — more when you move fast, fewer when you drift slowly. Click to blast them outward.",
+                "Bubbles drift up from the cursor — more when you move fast, fewer when you drift slowly. Click to blast them outward.",
             )
             .small()
             .weak(),
@@ -418,13 +433,25 @@ fn bubbles_section(ui: &mut egui::Ui, s: &mut Settings) {
                     .text("Bubbles per second"),
             );
             ui.add(egui::Slider::new(&mut s.bubbles.size, 4.0..=40.0).text("Size"));
-            ui.add(egui::Slider::new(&mut s.bubbles.buoyancy, 0.0..=300.0).text("Float strength"));
+            ui.add(
+                egui::Slider::new(&mut s.bubbles.buoyancy, -300.0..=300.0)
+                    .text("Float (negative falls)"),
+            );
             ui.add(
                 egui::Slider::new(&mut s.bubbles.lifetime, 0.5..=5.0)
                     .text("Lifetime")
                     .suffix(" s"),
             );
             ui.add(egui::Slider::new(&mut s.bubbles.wobble, 0.0..=100.0).text("Wobble"));
+            ui.add(
+                egui::Slider::new(&mut s.bubbles.momentum, 0.0..=1.0)
+                    .text("Cursor momentum"),
+            );
+            ui.add(egui::Slider::new(&mut s.bubbles.drag, 0.0..=10.0).text("Air drag"));
+            if s.bubbles.shape != BubbleShape::Bubble {
+                ui.add(egui::Slider::new(&mut s.bubbles.spin, 0.0..=3.0).text("Spin"));
+            }
+            palette_row(ui, &mut s.bubbles.palette);
         }
     });
 }

@@ -4,7 +4,7 @@ use tiny_skia::{
     RadialGradient, Shader, SpreadMode, Stroke, Transform,
 };
 
-use crate::settings::{Settings, TrailStyle};
+use crate::settings::{BubbleShape, Settings, TrailStyle};
 
 pub struct Ctx<'a> {
     pub dt: f32,
@@ -100,6 +100,11 @@ fn rgb(c: &[u8; 3]) -> (f32, f32, f32) {
     (c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0)
 }
 
+fn rgb3(c: &[u8; 3]) -> [f32; 3] {
+    let (r, g, b) = rgb(c);
+    [r, g, b]
+}
+
 fn hsv(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     let h = h.fract() * 6.0;
     let i = h.floor() as i32;
@@ -120,10 +125,6 @@ fn hsv(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
 /// Resolve the Soft style's (core, edge1, edge2) colors from the palette,
 /// falling back to a white core with pink/blue halos when unset.
 fn soft_colors(palette: &[[u8; 3]]) -> ([f32; 3], [f32; 3], [f32; 3]) {
-    let rgb3 = |c: &[u8; 3]| {
-        let (r, g, b) = rgb(c);
-        [r, g, b]
-    };
     const CORE: [f32; 3] = [0.97, 0.98, 1.0];
     const EDGE_A: [f32; 3] = [1.0, 0.72, 0.86];
     const EDGE_B: [f32; 3] = [0.70, 0.82, 1.0];
@@ -630,14 +631,25 @@ struct Bubble {
     vx: f32,
     vy: f32,
     r: f32,
-    hue: f32,
+    /// Resolved RGB at spawn (palette entry or classic hue).
+    color: [f32; 3],
     born: f32,
     life: f32,
     wob_phase: f32,
     wob_freq: f32,
+    /// Current rotation (rad) — snowflakes and ornaments.
+    rot: f32,
+    /// Angular velocity (rad/s), decays with movement drag.
+    spin: f32,
+    /// Snowflake arm variant seed.
+    variant: u32,
 }
 
 const BUBBLE_HUES: [f32; 6] = [0.55, 0.75, 0.90, 0.10, 0.40, 0.63];
+/// Number of distinct snowflake silhouettes.
+const SNOWFLAKE_VARIANTS: u32 = 8;
+/// How strongly cursor speed turns into ornament spin (rad/s per px/s).
+const ORNAMENT_SPIN_PER_SPEED: f32 = 0.015;
 
 pub struct Bubbles {
     list: Vec<Bubble>,
@@ -667,6 +679,19 @@ impl Bubbles {
     fn clear(&mut self) {
         self.list.clear();
         self.acc = 0.0;
+    }
+
+    /// Next particle color: the theme palette cycled per spawn, or the
+    /// classic soap-bubble hues when no palette is configured.
+    fn next_color(&mut self, palette: &[[u8; 3]]) -> [f32; 3] {
+        let c = if palette.is_empty() {
+            let (r, g, b) = hsv(BUBBLE_HUES[self.next_hue % BUBBLE_HUES.len()], 0.55, 0.95);
+            [r, g, b]
+        } else {
+            rgb3(&palette[self.next_hue % palette.len()])
+        };
+        self.next_hue += 1;
+        c
     }
 }
 
@@ -699,22 +724,37 @@ impl Effect for Bubbles {
         let fade = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
 
         self.acc += c.rate.max(0.0) * ctx.dt * self.speed_mod * fade;
+        let momentum = c.momentum.clamp(0.0, 1.0);
         while self.acc >= 1.0 {
             self.acc -= 1.0;
             if self.list.len() < 90 {
+                let color = self.next_color(&c.palette);
+                let dir = if rnd01() < 0.5 { -1.0 } else { 1.0 };
+                let speed = (ctx.vel.0 * ctx.vel.0 + ctx.vel.1 * ctx.vel.1).sqrt();
                 self.list.push(Bubble {
                     x: ctx.mouse.0 + rnd_range(-8.0, 8.0),
                     y: ctx.mouse.1 + rnd_range(-8.0, 8.0),
-                    vx: ctx.vel.0 * 0.35 + rnd_range(-60.0, 60.0),
-                    vy: ctx.vel.1 * 0.35 + rnd_range(-60.0, 20.0),
+                    vx: ctx.vel.0 * momentum + rnd_range(-60.0, 60.0),
+                    vy: ctx.vel.1 * momentum + rnd_range(-60.0, 20.0),
                     r: (c.size * rnd_range(0.6, 1.3)).max(2.0),
-                    hue: BUBBLE_HUES[self.next_hue % BUBBLE_HUES.len()],
+                    color,
                     born: ctx.now,
                     life: c.lifetime * rnd_range(0.7, 1.2),
                     wob_phase: rnd01() * std::f32::consts::TAU,
                     wob_freq: rnd_range(1.5, 3.2),
+                    rot: rnd01() * std::f32::consts::TAU,
+                    // Snowflakes tumble at the theme rate in a random
+                    // direction; ornaments pick up spin from cursor speed,
+                    // capped so a violent flick can't go dizzy.
+                    spin: match c.shape {
+                        BubbleShape::Snowflake => c.spin * dir,
+                        BubbleShape::Ornament => {
+                            (speed * ORNAMENT_SPIN_PER_SPEED * c.spin.max(0.0)).min(12.0) * dir
+                        }
+                        BubbleShape::Bubble => 0.0,
+                    },
+                    variant: (rnd01() * SNOWFLAKE_VARIANTS as f32) as u32,
                 });
-                self.next_hue += 1;
             } else {
                 self.acc = 0.0;
             }
@@ -749,19 +789,29 @@ impl Effect for Bubbles {
             true
         });
 
-        // Physics: buoyancy pulls up, drag calms everything, wobble sways.
+        // Physics: buoyancy pulls up (negative values sink), drag calms
+        // everything, wobble sways. Rotatable shapes keep spinning at their
+        // spawn rate — heavy damping belongs to movement, not to the tumble.
+        let drag = (-c.drag.max(0.0) * ctx.dt).exp();
+        let rotatable = matches!(c.shape, BubbleShape::Snowflake | BubbleShape::Ornament);
         for b in self.list.iter_mut() {
             b.vy -= c.buoyancy * ctx.dt;
             b.vx += (ctx.now * b.wob_freq + b.wob_phase).sin() * c.wobble * 4.0 * ctx.dt;
-            let drag = (-2.2 * ctx.dt).exp();
             b.vx *= drag;
             b.vy *= drag;
             b.x += b.vx * ctx.dt;
             b.y += b.vy * ctx.dt;
+            if rotatable {
+                b.rot += b.spin * ctx.dt;
+            }
         }
 
-        resolve_bubble_collisions(&mut self.list);
-        resolve_cursor_collisions(&mut self.list, ctx.mouse, ctx.vel);
+        // Snowflakes drift like weather — they don't collide with each other
+        // or get plowed by the cursor.
+        if c.shape != BubbleShape::Snowflake {
+            resolve_bubble_collisions(&mut self.list);
+            resolve_cursor_collisions(&mut self.list, ctx.mouse, ctx.vel);
+        }
     }
 
     fn render(&mut self, pm: &mut PixmapMut, cfg: &Settings, now: f32) {
@@ -774,33 +824,11 @@ impl Effect for Bubbles {
             if k <= 0.0 {
                 continue;
             }
-            let r = b.r;
-            let (cr, cg, cb) = hsv(b.hue, 0.55, 0.95);
-            let alpha = 0.85 * k;
-
-            // Soap-bubble body: nearly transparent center, colorful rim.
-            radial_fill_circle(
-                pm,
-                b.x,
-                b.y,
-                r,
-                &[
-                    (0.0, col(cr, cg, cb, alpha * 0.03)),
-                    (0.55, col(cr, cg, cb, alpha * 0.07)),
-                    (0.85, col(cr, cg, cb, alpha * 0.32)),
-                    (0.96, col(cr, cg, cb, alpha * 0.55)),
-                    (1.0, col(cr, cg, cb, alpha * 0.15)),
-                ],
-            );
-            stroke_circle(pm, b.x, b.y, r, 1.4, col(cr, cg, cb, 0.55 * k));
-            // Specular highlight.
-            fill_circle(
-                pm,
-                b.x - r * 0.35,
-                b.y - r * 0.40,
-                (r * 0.22).max(0.8),
-                col(1.0, 1.0, 1.0, 0.70 * k),
-            );
+            match c.shape {
+                BubbleShape::Bubble => render_soap_bubble(pm, b, k),
+                BubbleShape::Snowflake => render_snowflake(pm, b, k),
+                BubbleShape::Ornament => render_ornament(pm, b, k),
+            }
         }
     }
 
@@ -902,6 +930,106 @@ fn resolve_cursor_collisions(list: &mut [Bubble], mouse: (f32, f32), cursor_vel:
             b.vy += ny * jimp;
         }
     }
+}
+
+// --- Bubble shapes ----------------------------------------------------------
+
+fn render_soap_bubble(pm: &mut PixmapMut, b: &Bubble, k: f32) {
+    let (cr, cg, cb) = (b.color[0], b.color[1], b.color[2]);
+    let r = b.r;
+    let alpha = 0.85 * k;
+
+    // Soap-bubble body: nearly transparent center, colorful rim.
+    radial_fill_circle(
+        pm,
+        b.x,
+        b.y,
+        r,
+        &[
+            (0.0, col(cr, cg, cb, alpha * 0.03)),
+            (0.55, col(cr, cg, cb, alpha * 0.07)),
+            (0.85, col(cr, cg, cb, alpha * 0.32)),
+            (0.96, col(cr, cg, cb, alpha * 0.55)),
+            (1.0, col(cr, cg, cb, alpha * 0.15)),
+        ],
+    );
+    stroke_circle(pm, b.x, b.y, r, 1.4, col(cr, cg, cb, 0.55 * k));
+    // Specular highlight.
+    fill_circle(
+        pm,
+        b.x - r * 0.35,
+        b.y - r * 0.40,
+        (r * 0.22).max(0.8),
+        col(1.0, 1.0, 1.0, 0.70 * k),
+    );
+}
+
+/// One six-arm snowflake as a single batched path: a spoke per arm plus two
+/// side-branch pairs, with the variant seed tweaking branch angles and
+/// placement so flakes differ.
+fn snowflake_path(pb: &mut PathBuilder, x: f32, y: f32, r: f32, rot: f32, variant: u32) {
+    let branch_angle = 0.55 + ((variant >> 1) & 1) as f32 * 0.3;
+    let inner = 0.45 + ((variant >> 2) & 1) as f32 * 0.12;
+    for arm in 0..6 {
+        let a = rot + arm as f32 * std::f32::consts::TAU / 6.0;
+        let (ca, sa) = (a.cos(), a.sin());
+        pb.move_to(x, y);
+        pb.line_to(x + ca * r, y + sa * r);
+        for (t, len) in [(inner, 0.30f32), (0.72, 0.22f32)] {
+            let bx = x + ca * r * t;
+            let by = y + sa * r * t;
+            for s in [-1.0f32, 1.0] {
+                let ba = a + s * branch_angle;
+                pb.move_to(bx, by);
+                pb.line_to(bx + ba.cos() * r * len, by + ba.sin() * r * len);
+            }
+        }
+    }
+}
+
+fn render_snowflake(pm: &mut PixmapMut, b: &Bubble, k: f32) {
+    let (cr, cg, cb) = (b.color[0], b.color[1], b.color[2]);
+    let mut pb = PathBuilder::new();
+    snowflake_path(&mut pb, b.x, b.y, b.r, b.rot, b.variant);
+    if let Some(p) = pb.finish() {
+        stroke_path(pm, &p, (b.r * 0.14).max(1.0), col(cr, cg, cb, 0.85 * k));
+    }
+}
+
+fn render_ornament(pm: &mut PixmapMut, b: &Bubble, k: f32) {
+    let (cr, cg, cb) = (b.color[0], b.color[1], b.color[2]);
+    let r = b.r;
+    let alpha = 0.95 * k;
+
+    // Shaded ball: the gradient center rides toward the upper-left so the
+    // sphere reads as lit from that side.
+    radial_fill_circle(
+        pm,
+        b.x - r * 0.25,
+        b.y - r * 0.25,
+        r * 1.2,
+        &[
+            (0.0, col((cr + 1.0) * 0.5, (cg + 1.0) * 0.5, (cb + 1.0) * 0.5, alpha)),
+            (0.55, col(cr, cg, cb, alpha)),
+            (1.0, col(cr * 0.55, cg * 0.55, cb * 0.55, alpha)),
+        ],
+    );
+    // Accent band across the sphere, rotating with it. Endpoints inside the
+    // silhouette plus round caps keep the band on the ball.
+    let (ca, sa) = (b.rot.cos(), b.rot.sin());
+    stroke_segment(
+        pm,
+        b.x - ca * r * 0.8,
+        b.y - sa * r * 0.8,
+        b.x + ca * r * 0.8,
+        b.y + sa * r * 0.8,
+        r * 0.35,
+        col((cr + 1.0) * 0.5, (cg + 1.0) * 0.5, (cb + 1.0) * 0.5, 0.5 * k),
+    );
+    // Dark rim, fixed specular highlight, and a little hanger cap.
+    stroke_circle(pm, b.x, b.y, r, 1.2, col(cr * 0.4, cg * 0.4, cb * 0.4, 0.35 * k));
+    fill_circle(pm, b.x - r * 0.35, b.y - r * 0.40, (r * 0.18).max(0.7), col(1.0, 1.0, 1.0, 0.8 * k));
+    fill_circle(pm, b.x, b.y - r * 1.02, (r * 0.18).max(0.7), col(0.85, 0.68, 0.25, 0.9 * k));
 }
 
 // --- Sparkles ---------------------------------------------------------------
@@ -1187,6 +1315,7 @@ impl Effects {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::BubbleCfg;
 
     fn bubble(x: f32, y: f32) -> Bubble {
         Bubble {
@@ -1195,11 +1324,14 @@ mod tests {
             vx: 0.0,
             vy: 0.0,
             r: 10.0,
-            hue: 0.0,
+            color: [1.0, 1.0, 1.0],
             born: 0.0,
             life: 100.0,
             wob_phase: 0.0,
             wob_freq: 1.0,
+            rot: 0.0,
+            spin: 0.0,
+            variant: 0,
         }
     }
 
@@ -1441,6 +1573,122 @@ mod tests {
             t.render(&mut pm.as_mut(), cfg, 0.05);
             let painted = pm.data().chunks_exact(4).filter(|p| p[3] > 0).count();
             assert!(painted > 50, "{:?} trail should paint pixels, got {}", style, painted);
+        }
+    }
+
+    #[test]
+    fn snowflake_spawns_rotating_with_little_momentum() {
+        let settings = bubble_settings(BubbleShape::Snowflake, 0.05, 3.5, 0.5);
+        let cfg: &'static Settings = Box::leak(Box::new(settings));
+        let mut b = Bubbles::default();
+        for frame in 0..30 {
+            b.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (1000.0, 0.0), 30.0, false, cfg));
+        }
+        assert!(!b.list.is_empty(), "snowflakes should spawn while moving");
+        for flake in &b.list {
+            assert!(
+                (flake.spin.abs() - 0.5).abs() < 1e-4,
+                "every flake spins at the theme rate (direction is random), got {}",
+                flake.spin
+            );
+            assert!(
+                flake.vx.abs() < 0.05 * 1000.0 + 61.0,
+                "snowflake momentum inheritance should be tiny, vx={}",
+                flake.vx
+            );
+            assert!(flake.variant < SNOWFLAKE_VARIANTS);
+        }
+    }
+
+    #[test]
+    fn ornaments_pick_up_spin_and_damp_faster_than_bubbles() {
+        // Fast movement should kick ornaments into a spin.
+        let orn = bubble_settings(BubbleShape::Ornament, 0.35, 6.0, 1.0);
+        let orn_cfg: &'static Settings = Box::leak(Box::new(orn));
+        let mut o = Bubbles::default();
+        for frame in 0..12 {
+            o.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (2000.0, 0.0), 30.0, false, orn_cfg));
+        }
+        assert!(
+            o.list.iter().any(|b| b.spin.abs() > 3.0),
+            "fast movement should spin ornaments, spins={:?}",
+            o.list.iter().map(|b| b.spin).collect::<Vec<_>>()
+        );
+
+        // Same starting velocity, heavier drag: ornaments must calm down
+        // strictly faster than classic bubbles. Bubbles are placed by hand
+        // with the cursor far away so no fresh spawns or collisions muddy the
+        // comparison.
+        let classic =
+            Settings { bubbles: BubbleCfg { drag: 2.2, ..orn_cfg.bubbles.clone() }, ..orn_cfg.clone() };
+        let classic_cfg: &'static Settings = Box::leak(Box::new(classic));
+        let mut o = Bubbles::default();
+        let mut c = Bubbles::default();
+        let mut ob = bubble(5000.0, 5000.0);
+        ob.vx = 700.0;
+        let mut cb = bubble(5000.0, 5000.0);
+        cb.vx = 700.0;
+        o.list.push(ob);
+        c.list.push(cb);
+        for frame in 0..30 {
+            let now = 1.0 + frame as f32 / 60.0;
+            o.update(&ctx_at_cfg(now, (0.0, 0.0), (0.0, 0.0), 0.0, false, orn_cfg));
+            c.update(&ctx_at_cfg(now, (0.0, 0.0), (0.0, 0.0), 0.0, false, classic_cfg));
+        }
+        let os = o.list[0].vx.hypot(o.list[0].vy);
+        let cs = c.list[0].vx.hypot(c.list[0].vy);
+        assert!(os < cs, "ornaments should damp faster (orn={} classic={})", os, cs);
+    }
+
+    #[test]
+    fn bubble_palette_resolves_per_particle() {
+        let mut settings = bubble_settings(BubbleShape::Bubble, 0.35, 2.2, 0.0);
+        settings.bubbles.palette = vec![[255, 0, 0], [0, 0, 255]];
+        let cfg: &'static Settings = Box::leak(Box::new(settings));
+        let mut b = Bubbles::default();
+        for frame in 0..40 {
+            b.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (600.0, 0.0), 30.0, false, cfg));
+        }
+        assert!(b.list.len() >= 4, "should have spawned several, got {}", b.list.len());
+        for bub in &b.list {
+            let is_red = bub.color[0] > 0.99 && bub.color[1] < 0.01 && bub.color[2] < 0.01;
+            let is_blue = bub.color[2] > 0.99 && bub.color[0] < 0.01 && bub.color[1] < 0.01;
+            assert!(is_red || is_blue, "palette should resolve exactly, got {:?}", bub.color);
+        }
+        // Both palette entries must actually appear over several spawns.
+        let reds = b.list.iter().filter(|b| b.color[0] > 0.99).count();
+        assert!(reds > 0 && reds < b.list.len(), "palette should cycle, reds={} of {}", reds, b.list.len());
+    }
+
+    /// A Settings with the bubbles section set for a given shape, everything
+    /// else at defaults.
+    fn bubble_settings(shape: BubbleShape, momentum: f32, drag: f32, spin: f32) -> Settings {
+        let mut s = Settings::default();
+        s.bubbles.shape = shape;
+        s.bubbles.momentum = momentum;
+        s.bubbles.drag = drag;
+        s.bubbles.spin = spin;
+        s.bubbles.rate = 30.0;
+        s
+    }
+
+    fn ctx_at_cfg(
+        now: f32,
+        mouse: (f32, f32),
+        vel: (f32, f32),
+        moving: f32,
+        clicked: bool,
+        cfg: &'static Settings,
+    ) -> Ctx<'static> {
+        Ctx {
+            dt: 1.0 / 60.0,
+            now,
+            mouse,
+            vel,
+            clicked,
+            moving,
+            cfg,
+            screen: (10000.0, 10000.0),
         }
     }
 }

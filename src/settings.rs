@@ -46,26 +46,53 @@ impl Default for TrailCfg {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// What bubbles look like. Snowflakes skip particle/cursor collisions and
+/// rotate; ornament balls spin from cursor speed and damp heavily.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BubbleShape {
+    #[default]
+    Bubble,
+    Snowflake,
+    Ornament,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BubbleCfg {
     pub enabled: bool,
+    pub shape: BubbleShape,
     pub rate: f32,
     pub size: f32,
     pub buoyancy: f32,
     pub lifetime: f32,
     pub wobble: f32,
+    /// Colors cycled per particle. Empty falls back to the built-in bubble
+    /// hues.
+    pub palette: Vec<[u8; 3]>,
+    /// Fraction of cursor velocity inherited at spawn (0..1).
+    pub momentum: f32,
+    /// Exponential velocity decay per second — higher calms movement faster.
+    pub drag: f32,
+    /// Spin scale for rotatable shapes (snowflake: random direction at this
+    /// rate; ornament: scales the speed-derived spin). rad/s.
+    pub spin: f32,
 }
 
 impl Default for BubbleCfg {
     fn default() -> Self {
         Self {
             enabled: true,
+            shape: BubbleShape::Bubble,
             rate: 9.0,
             size: 14.0,
             buoyancy: 85.0,
             lifetime: 2.4,
             wobble: 30.0,
+            palette: Vec::new(),
+            momentum: 0.35,
+            drag: 2.2,
+            spin: 0.0,
         }
     }
 }
