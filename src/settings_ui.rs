@@ -781,42 +781,48 @@ fn profiles_group(
         });
 
         // Gallery: fixed three columns; tiles stretch to fill the row and
-        // previews re-render at exactly the tile size. available_width()
-        // already excludes the group margins — only spacing and a small
-        // anti-overflow pad come off the top.
-        let cell_w =
-            ((ui.available_width() - 2.0 * TILE_SPACING - 6.0) / GALLERY_COLS as f32).max(120.0);
-        *preview_cell_w = cell_w;
-        egui::Grid::new("profile_gallery")
-            .spacing([TILE_SPACING, TILE_SPACING])
-            .num_columns(GALLERY_COLS)
+        // previews re-render at exactly the tile size. The cell width is
+        // measured INSIDE the scroll area, where the vertical scrollbar has
+        // already taken its share — measuring outside overflows by exactly
+        // that amount.
+        egui::ScrollArea::vertical()
+            .id_source("profiles_scroll")
             .show(ui, |ui| {
-                // egui's Grid does not auto-wrap at num_columns — rows must
-                // be ended explicitly.
-                let mut placed = 0;
-                for card in cards {
-                    let selected = app.theme == card.theme
-                        && active_profile_in(app, &card.theme) == card.profile;
-                    let resp = gallery_card(ui, card, selected, cell_w);
-                    if resp.clicked() && !selected {
-                        *action = Some(Action::SwitchProfile(
-                            card.theme.clone(),
-                            card.profile.clone(),
-                        ));
-                    }
-                    placed += 1;
-                    if placed % GALLERY_COLS == 0 {
-                        ui.end_row();
-                    }
-                }
-                let plus = plus_tile(ui, cell_w);
-                if plus.clicked() {
-                    *dialog_open = true;
-                }
-                placed += 1;
-                if placed % GALLERY_COLS != 0 {
-                    ui.end_row();
-                }
+                let cell_w = ((ui.available_width() - 2.0 * TILE_SPACING - 8.0)
+                    / GALLERY_COLS as f32)
+                    .max(120.0);
+                *preview_cell_w = cell_w;
+                egui::Grid::new("profile_gallery")
+                    .spacing([TILE_SPACING, TILE_SPACING])
+                    .num_columns(GALLERY_COLS)
+                    .show(ui, |ui| {
+                        // egui's Grid does not auto-wrap at num_columns —
+                        // rows must be ended explicitly.
+                        let mut placed = 0;
+                        for card in cards {
+                            let selected = app.theme == card.theme
+                                && active_profile_in(app, &card.theme) == card.profile;
+                            let resp = gallery_card(ui, card, selected, cell_w);
+                            if resp.clicked() && !selected {
+                                *action = Some(Action::SwitchProfile(
+                                    card.theme.clone(),
+                                    card.profile.clone(),
+                                ));
+                            }
+                            placed += 1;
+                            if placed % GALLERY_COLS == 0 {
+                                ui.end_row();
+                            }
+                        }
+                        let plus = plus_tile(ui, cell_w);
+                        if plus.clicked() {
+                            *dialog_open = true;
+                        }
+                        placed += 1;
+                        if placed % GALLERY_COLS != 0 {
+                            ui.end_row();
+                        }
+                    });
             });
 
         ui.add_space(4.0);
@@ -998,7 +1004,7 @@ fn dialog_body(
     // Source tiles show previews at their native pixel size — the same
     // textures the gallery uses — so nothing is scaled. The frame has no
     // width of its own, so constrain the body to exactly the grid width.
-    ui.set_width(tile_w * DIALOG_COLS as f32 + 2.0 * TILE_SPACING + 24.0);
+    ui.set_width(tile_w * DIALOG_COLS as f32 + 2.0 * TILE_SPACING + 38.0);
     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
         egui::Grid::new("source_grid")
             .spacing([TILE_SPACING, TILE_SPACING])
