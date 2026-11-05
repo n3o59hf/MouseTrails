@@ -224,10 +224,9 @@ struct PreviewCard {
 /// Preview tile aspect (height / width) — sims re-render at whatever pixel
 /// size the layout gives them, keeping this ratio.
 const PREVIEW_ASPECT: f32 = 74.0 / 132.0;
-/// Smallest allowed gallery tile width; the column count adapts to it so
-/// the grid never overflows the window.
-const MIN_TILE_W: f32 = 160.0;
 const TILE_SPACING: f32 = 10.0;
+/// Fixed column count of the profile gallery.
+const GALLERY_COLS: usize = 3;
 /// Column count of the create dialog's source grid.
 const DIALOG_COLS: usize = 3;
 /// ~3.7 sim-seconds at the fixed 30 fps step: trail fully grown, particles
@@ -455,7 +454,7 @@ impl eframe::App for SettingsApp {
         // never stretches on its own. Drive it from the window width so a
         // wider window means longer sliders: reserve room for the value box
         // and the label to the right of the rail.
-        let rail_width = (ctx.screen_rect().width() - 210.0).max(100.0);
+        let rail_width = (ctx.screen_rect().width() - 250.0).max(100.0);
         ctx.style_mut(|style| style.spacing.slider_width = rail_width);
 
         // Split the struct so the egui closures below can capture disjoint
@@ -781,19 +780,16 @@ fn profiles_group(
             });
         });
 
-        // Gallery: the column count adapts to the available width with a
-        // minimum tile size, so the grid always fits — narrow windows get
-        // fewer columns instead of overflowing. Tiles stretch to fill the
-        // row and previews re-render at exactly the tile size.
-        let avail = ui.available_width() - 12.0;
-        let cols = ((avail + TILE_SPACING) / (MIN_TILE_W + TILE_SPACING))
-            .floor()
-            .max(1.0) as usize;
-        let cell_w = (avail - TILE_SPACING * (cols as f32 - 1.0)) / cols as f32;
+        // Gallery: fixed three columns; tiles stretch to fill the row and
+        // previews re-render at exactly the tile size. available_width()
+        // already excludes the group margins — only spacing and a small
+        // anti-overflow pad come off the top.
+        let cell_w =
+            ((ui.available_width() - 2.0 * TILE_SPACING - 6.0) / GALLERY_COLS as f32).max(120.0);
         *preview_cell_w = cell_w;
         egui::Grid::new("profile_gallery")
             .spacing([TILE_SPACING, TILE_SPACING])
-            .num_columns(cols)
+            .num_columns(GALLERY_COLS)
             .show(ui, |ui| {
                 // egui's Grid does not auto-wrap at num_columns — rows must
                 // be ended explicitly.
@@ -809,7 +805,7 @@ fn profiles_group(
                         ));
                     }
                     placed += 1;
-                    if placed % cols == 0 {
+                    if placed % GALLERY_COLS == 0 {
                         ui.end_row();
                     }
                 }
@@ -818,7 +814,7 @@ fn profiles_group(
                     *dialog_open = true;
                 }
                 placed += 1;
-                if placed % cols != 0 {
+                if placed % GALLERY_COLS != 0 {
                     ui.end_row();
                 }
             });
@@ -1000,8 +996,9 @@ fn dialog_body(
     };
 
     // Source tiles show previews at their native pixel size — the same
-    // textures the gallery uses — so nothing is scaled.
-    // (tile_w arrives as a parameter.)
+    // textures the gallery uses — so nothing is scaled. The frame has no
+    // width of its own, so constrain the body to exactly the grid width.
+    ui.set_width(tile_w * DIALOG_COLS as f32 + 2.0 * TILE_SPACING + 24.0);
     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
         egui::Grid::new("source_grid")
             .spacing([TILE_SPACING, TILE_SPACING])
