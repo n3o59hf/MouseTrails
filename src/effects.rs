@@ -1313,6 +1313,31 @@ struct Ripple {
     x: f32,
     y: f32,
     born: f32,
+    /// Random wobble phase so consecutive clicks don't repeat the shape.
+    phase: f32,
+}
+
+/// Polyline segments per organic ring.
+const RING_SEGMENTS: usize = 40;
+/// Duration of the bright radial flash at the click point.
+const FLASH_SECS: f32 = 0.15;
+/// Angular wobble lobes around the ring.
+const RING_LOBES: f32 = 6.0;
+
+/// 1-(1-t)³ — fast start, gentle settle.
+fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Ring color: the ripple palette cycled per ring, or the configured color
+/// when no palette is set.
+fn ring_color(base: &[u8; 3], palette: &[[u8; 3]], ring: usize) -> (f32, f32, f32) {
+    if palette.is_empty() {
+        rgb(base)
+    } else {
+        rgb(&palette[ring % palette.len()])
+    }
 }
 
 pub struct Ripples {
@@ -1338,16 +1363,17 @@ impl Effect for Ripples {
             self.clear();
             return;
         }
-        if ctx.clicked {
-            let max = c.rings.clamp(1, 6) as usize;
-            for _ in 0..max {
-                if self.list.len() < 24 {
-                    self.list.push(Ripple { x: ctx.mouse.0, y: ctx.mouse.1, born: ctx.now });
-                }
-            }
+        // One entry per click; the staggered rings are drawn from it.
+        if ctx.clicked && self.list.len() < 24 {
+            self.list.push(Ripple {
+                x: ctx.mouse.0,
+                y: ctx.mouse.1,
+                born: ctx.now,
+                phase: rnd01() * std::f32::consts::TAU,
+            });
         }
         let total = c.lifetime + (c.rings.saturating_sub(1)) as f32 * 0.12;
-        self.list.retain(|r| ctx.now - r.born < total);
+        self.list.retain(|r| ctx.now - r.born < total.max(FLASH_SECS));
     }
 
     fn render(&mut self, pm: &mut PixmapMut, cfg: &EffectSettings, now: f32) {
@@ -1355,17 +1381,60 @@ impl Effect for Ripples {
         if !c.enabled {
             return;
         }
-        let (cr, cg, cb) = rgb(&c.color);
         for r in &self.list {
+            // Click-point flash: a quick bright pulse, gone before the rings
+            // have gotten far.
+            let flash_t = (now - r.born) / FLASH_SECS;
+            if (0.0..1.0).contains(&flash_t) {
+                let (fr, fg, fb) = ring_color(&c.color, &c.palette, 0);
+                let radius = (c.width * 4.0 * (0.4 + 0.6 * flash_t)).max(1.0);
+                radial_fill_circle(
+                    pm,
+                    r.x,
+                    r.y,
+                    radius,
+                    &[
+                        (0.0, col(fr, fg, fb, 0.55 * (1.0 - flash_t))),
+                        (1.0, col(fr, fg, fb, 0.0)),
+                    ],
+                );
+            }
+
             for ring in 0..c.rings.clamp(1, 6) {
                 let age = now - r.born - ring as f32 * 0.12;
                 if age <= 0.0 || age >= c.lifetime {
                     continue;
                 }
-                let k = 1.0 - age / c.lifetime;
-                let radius = c.speed * age;
+                let t = age / c.lifetime;
+                let k = 1.0 - t;
+                // Ease-out expansion: starts fast, settles like a real
+                // disturbance. Same total reach as the old linear motion.
+                let radius = c.speed * c.lifetime * ease_out_cubic(t);
+                let (cr, cg, cb) = ring_color(&c.color, &c.palette, ring as usize);
+
+                // Angular wobble, decaying as the ring ages so it settles
+                // into a clean circle.
+                let wobble = c.wobble.clamp(0.0, 0.35) * k;
                 let width = (c.width * (0.4 + 0.6 * k)).max(0.5);
-                stroke_circle(pm, r.x, r.y, radius, width, col(cr, cg, cb, 0.85 * k.powf(1.6)));
+
+                let mut pb = PathBuilder::new();
+                for seg in 0..RING_SEGMENTS {
+                    let th = seg as f32 * std::f32::consts::TAU / RING_SEGMENTS as f32;
+                    let rr = radius * (1.0 + wobble * (RING_LOBES * th + r.phase).sin());
+                    let px = r.x + rr * th.cos();
+                    let py = r.y + rr * th.sin();
+                    if seg == 0 {
+                        pb.move_to(px, py);
+                    } else {
+                        pb.line_to(px, py);
+                    }
+                }
+                pb.close();
+                if let Some(p) = pb.finish() {
+                    // Two-pass glow: wide soft halo under a bright core.
+                    stroke_path(pm, &p, width * 2.2, col(cr, cg, cb, 0.12 * k));
+                    stroke_path(pm, &p, width, col(cr, cg, cb, 0.85 * k.powf(1.6)));
+                }
             }
         }
     }
@@ -1378,7 +1447,8 @@ impl Effect for Ripples {
         let mut b: Option<RectF> = None;
         for r in &self.list {
             let max_radius = c.speed * (c.lifetime + (c.rings.saturating_sub(1)) as f32 * 0.12);
-            let rect = RectF::point(r.x, r.y, max_radius + c.width + 4.0);
+            // Generous pad: glow pass is 2.2× the core width.
+            let rect = RectF::point(r.x, r.y, max_radius + c.width * 3.0 + 6.0);
             match &mut b {
                 Some(acc) => acc.merge(rect),
                 None => b = Some(rect),
@@ -1731,6 +1801,46 @@ mod tests {
             500.0 - rect.y0
         );
         assert!(rect.x1 - 500.0 >= 60.0, "bounds must cover the ball body");
+    }
+
+    #[test]
+    fn ease_out_cubic_is_monotonic_fast_and_bounded() {
+        assert_eq!(ease_out_cubic(0.0), 0.0);
+        assert_eq!(ease_out_cubic(1.0), 1.0);
+        let mut prev = 0.0;
+        for i in 1..=20 {
+            let v = ease_out_cubic(i as f32 / 20.0);
+            assert!(v > prev, "must be strictly increasing");
+            prev = v;
+        }
+        // Fast start: over 3/4 of the distance is covered in the first half.
+        assert!(ease_out_cubic(0.5) > 0.75);
+    }
+
+    #[test]
+    fn ring_color_cycles_palette_and_falls_back() {
+        let base = [10, 20, 30];
+        let pal = vec![[255, 0, 0], [0, 255, 0]];
+        assert!(ring_color(&base, &pal, 0).0 > 0.99, "ring 0 takes palette[0]");
+        assert!(ring_color(&base, &pal, 1).1 > 0.99, "ring 1 takes palette[1]");
+        assert!(ring_color(&base, &pal, 2).0 > 0.99, "palette cycles");
+        let (r, g, b) = ring_color(&base, &[], 3);
+        assert!((r - 10.0 / 255.0).abs() < 1e-4 && (g - 20.0 / 255.0).abs() < 1e-4);
+        assert!((b - 30.0 / 255.0).abs() < 1e-4, "no palette falls back to color");
+    }
+
+    #[test]
+    fn click_spawns_one_ripple_and_flash_renders() {
+        let mut rp = Ripples::default();
+        rp.update(&ctx((100.0, 100.0), true, 0.0));
+        assert_eq!(rp.list.len(), 1, "one Ripple entry per click, not one per ring");
+
+        let cfg: &'static EffectSettings = Box::leak(Box::new(EffectSettings::default()));
+        let mut pm = tiny_skia::Pixmap::new(200, 200).unwrap();
+        // 20 ms after the click: inside the flash window.
+        rp.render(&mut pm.as_mut(), cfg, 0.52);
+        let painted = pm.data().chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(painted > 10, "click flash should paint pixels, got {}", painted);
     }
 
     #[test]

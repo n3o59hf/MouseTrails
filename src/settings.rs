@@ -183,7 +183,7 @@ impl Default for SparkleCfg {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RippleCfg {
     pub enabled: bool,
@@ -192,6 +192,11 @@ pub struct RippleCfg {
     pub lifetime: f32,
     pub width: f32,
     pub color: [u8; 3],
+    /// Colors cycled per ring. Empty falls back to `color`.
+    pub palette: Vec<[u8; 3]>,
+    /// Angular wobble amplitude as a fraction of the radius (0 = perfect
+    /// circles). Decays as a ring ages, settling into a clean circle.
+    pub wobble: f32,
 }
 
 impl Default for RippleCfg {
@@ -203,6 +208,8 @@ impl Default for RippleCfg {
             lifetime: 0.6,
             width: 3.0,
             color: [140, 230, 255],
+            palette: Vec::new(),
+            wobble: 0.06,
         }
     }
 }

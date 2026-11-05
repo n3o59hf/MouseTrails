@@ -1099,10 +1099,14 @@ fn ripples_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Theme
                 )
                 .text("Line width"),
             );
+            ui.add(
+                egui::Slider::new(&mut s.ripples.wobble, 0.0..=0.35).text("Wobble"),
+            );
             ui.horizontal(|ui| {
                 ui.label("Color");
                 ui.color_edit_button_srgb(&mut s.ripples.color);
             });
+            palette_row(ui, &mut s.ripples.palette);
         }
     });
 }
