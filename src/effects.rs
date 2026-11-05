@@ -500,23 +500,24 @@ impl Effect for Trail {
                         let start =
                             if j == 1 { pt(run[0]) } else { mid(pt(run[j - 1]), pt(idx)) };
                         let end = mid(pt(idx), pt(run[j + 1]));
-                        // Two wide tinted halos under a bright core: the outer
-                        // ring shows edge_a, the inner edge_b, the center core.
+                        // Two wide tinted halos under a bright core: the
+                        // outer ring shows edge_b, the middle edge_a, the
+                        // center the core color.
                         stroke_quad(
                             pm,
                             start,
                             pt(idx),
                             end,
-                            width * 2.0,
-                            col(edge_a[0], edge_a[1], edge_a[2], 0.14 * k),
+                            width * 2.15,
+                            col(edge_b[0], edge_b[1], edge_b[2], 0.14 * k),
                         );
                         stroke_quad(
                             pm,
                             start,
                             pt(idx),
                             end,
-                            width * 1.45,
-                            col(edge_b[0], edge_b[1], edge_b[2], 0.20 * k),
+                            width * 1.55,
+                            col(edge_a[0], edge_a[1], edge_a[2], 0.20 * k),
                         );
                         stroke_quad(
                             pm,

@@ -143,4 +143,35 @@ mod tests {
         assert_eq!(w2.bubbles, crate::settings::BubbleCfg::default(), "disk def wins");
         assert_eq!(w2.trail.style, crate::settings::TrailStyle::Soft, "rest still themed");
     }
+
+    /// Render each built-in theme through the real simulation + render
+    /// pipeline and save a sample PNG to %TEMP%. Ignored by default — run
+    /// with `cargo test --release render_visual_samples -- --ignored` when
+    /// tuning theme visuals.
+    #[test]
+    #[ignore = "writes sample PNGs to %TEMP%; run explicitly"]
+    fn render_visual_samples() {
+        let store = Store::new(std::env::temp_dir().join("MouseTrails-theme-samples"));
+        let (w, h) = (420u32, 240u32);
+        for b in BUILTINS.iter() {
+            let es = materialize_profile(&store, b.id);
+            let exprs = crate::expr::FrameExprs::build(&es);
+            let mut sim = crate::preview::ThemePreview::new(w, h);
+            // Six sim-seconds: enough for trails, spawns and a click blast.
+            for _ in 0..180 {
+                sim.step(&exprs);
+            }
+            let img = sim.image().expect("preview rendered");
+            let mut pm = tiny_skia::Pixmap::new(w, h).unwrap();
+            for (i, c) in img.pixels.iter().enumerate() {
+                pm.data_mut()[i * 4] = c.r();
+                pm.data_mut()[i * 4 + 1] = c.g();
+                pm.data_mut()[i * 4 + 2] = c.b();
+                pm.data_mut()[i * 4 + 3] = c.a();
+            }
+            let path = std::env::temp_dir().join(format!("mousetrails-sample-{}.png", b.id));
+            pm.save_png(&path).expect("save sample");
+            println!("saved {}", path.display());
+        }
+    }
 }
