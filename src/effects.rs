@@ -1023,6 +1023,19 @@ fn render_ornament(pm: &mut PixmapMut, b: &Bubble, k: f32) {
     let (cr, cg, cb) = (b.color[0], b.color[1], b.color[2]);
     let r = b.r;
     let alpha = 0.95 * k;
+    let (ca, sa) = (b.rot.cos(), b.rot.sin());
+
+    // Hanger cap: orbits with the spin so the whole ornament reads as one
+    // rigid body. Drawn before the ball so the ball's fill covers the
+    // junction — blending cap over ball darkened the intersection while
+    // fading.
+    fill_circle(
+        pm,
+        b.x + sa * r * 1.02,
+        b.y - ca * r * 1.02,
+        (r * 0.18).max(0.7),
+        col(0.85, 0.68, 0.25, 0.9 * k),
+    );
 
     // Shaded ball: the fill is clipped to the silhouette; the gradient
     // center rides toward the upper-left "light" so the bottom-right reads
@@ -1042,22 +1055,20 @@ fn render_ornament(pm: &mut PixmapMut, b: &Bubble, k: f32) {
             (1.0, col(cr * 0.5, cg * 0.5, cb * 0.5, alpha)),
         ],
     );
-    // Thin sheen line across the sphere, rotating with it — the only visual
-    // cue for the spin, so kept subtle rather than striped.
-    let (ca, sa) = (b.rot.cos(), b.rot.sin());
+    // Thin sheen line across the sphere, perpendicular to the cap axis —
+    // the equator of the spinning ball, kept subtle rather than striped.
     stroke_segment(
         pm,
-        b.x - ca * r * 0.55,
-        b.y - sa * r * 0.55,
         b.x + ca * r * 0.55,
         b.y + sa * r * 0.55,
+        b.x - ca * r * 0.55,
+        b.y - sa * r * 0.55,
         (r * 0.14).max(1.2),
         col((cr + 1.0) * 0.5, (cg + 1.0) * 0.5, (cb + 1.0) * 0.5, 0.35 * k),
     );
-    // Dark rim, fixed glossy highlight, and a little hanger cap.
+    // Dark rim and fixed glossy highlight finish it off.
     stroke_circle(pm, b.x, b.y, r, 1.2, col(cr * 0.4, cg * 0.4, cb * 0.4, 0.35 * k));
     fill_circle(pm, b.x - r * 0.35, b.y - r * 0.40, (r * 0.18).max(0.7), col(1.0, 1.0, 1.0, 0.8 * k));
-    fill_circle(pm, b.x, b.y - r * 1.02, (r * 0.18).max(0.7), col(0.85, 0.68, 0.25, 0.9 * k));
 }
 
 // --- Sparkles ---------------------------------------------------------------
