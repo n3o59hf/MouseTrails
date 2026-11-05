@@ -1,16 +1,6 @@
 {
   "name": "Winter",
   "description": "A soft white trail with pink and blue halos, slowly drifting snowflakes and pale sparkles.",
-  "bounds": {
-    "bubbles.size": [
-      6.0,
-      60.0
-    ],
-    "sparkles.size": [
-      1.5,
-      10.0
-    ]
-  },
   "trail": {
     "enabled": true,
     "style": "soft",

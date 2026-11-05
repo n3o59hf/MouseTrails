@@ -102,6 +102,7 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         active_def,
         theme_err: None,
         new_profile_name: String::new(),
+        new_profile_base: "default".to_string(),
         new_theme_name: String::new(),
         window_visible: true,
     };
@@ -174,24 +175,29 @@ struct SettingsApp {
     cards_dirty: bool,
     /// The active theme's definition — supplies slider bounds overrides.
     active_def: Option<ThemeDef>,
-    /// Error from the last theme/profile action, shown until it clears.
+    /// Error from the last profile/preset action, shown until it clears.
     theme_err: Option<String>,
     new_profile_name: String,
+    /// Base preset picked for the next new profile.
+    new_profile_base: String,
     new_theme_name: String,
     /// Tracked hide/show state of the window (drives preview animation).
     window_visible: bool,
 }
 
 struct PreviewCard {
-    id: String,
-    name: String,
-    desc: String,
-    builtin: bool,
+    /// Owning preset id (the theme folder).
+    theme: String,
+    /// Profile name within that preset.
+    profile: String,
+    /// Display label: bare profile name for the default preset, qualified
+    /// otherwise.
+    label: String,
     sim: ThemePreview,
     exprs: FrameExprs,
     texture: Option<egui::TextureHandle>,
     /// Sim frames played; the preview freezes at PREVIEW_FRAMES and replays
-    /// when the theme's parameters change.
+    /// when the profile's parameters change.
     played: u32,
 }
 
@@ -212,40 +218,40 @@ fn theme_ids(shared: &SharedSettings) -> Vec<String> {
     ids
 }
 
-/// (Re)build the preview cards. Expensive-ish (file reads + parses), so it
-/// only runs when the theme set or profiles change.
+/// (Re)build the preview cards: one per (preset, profile) pair — the
+/// profiles are the selector, so previews show the user's actual settings.
+/// Expensive-ish (file reads + parses), so it only runs when the theme set
+/// or profiles change.
 fn build_cards(shared: &SharedSettings) -> (Vec<PreviewCard>, Option<ThemeDef>) {
     let app = shared.app.read().unwrap();
     let mut cards = Vec::new();
     let mut active_def = None;
-    for id in theme_ids(shared) {
-        let def = themes::load_def(&shared.store, &id).unwrap_or_default();
-        let (name, desc) = if def.name.is_empty() {
-            (id.clone(), String::new())
-        } else {
-            (def.name.clone(), def.description.clone())
-        };
-        let profile = active_profile_in(&app, &id);
-        let es = shared.store.load_profile(&id, &profile).unwrap_or_else(|| {
-            // Not materialized yet: preview the definition over factory
-            // defaults without writing anything.
-            themes::apply_def(&def, &EffectSettings::default())
-        });
-        let is_active = id == app.theme;
-        if is_active {
+    for theme in theme_ids(shared) {
+        let def = themes::load_def(&shared.store, &theme).unwrap_or_default();
+        if theme == app.theme {
             active_def = Some(def.clone());
         }
-        let is_builtin = themes::builtin(&id).is_some();
-        cards.push(PreviewCard {
-            id,
-            name,
-            desc,
-            builtin: is_builtin,
-            sim: ThemePreview::new(PREVIEW_W, PREVIEW_H),
-            exprs: FrameExprs::build(&es),
-            texture: None,
-            played: 0,
-        });
+        for profile in shared.store.list_profiles(&theme) {
+            let es = shared.store.load_profile(&theme, &profile).unwrap_or_else(|| {
+                // Not materialized yet: preview the definition over factory
+                // defaults without writing anything.
+                themes::apply_def(&def, &EffectSettings::default())
+            });
+            let label = if theme == "default" {
+                profile.clone()
+            } else {
+                format!("{} \u{00b7} {}", theme, profile)
+            };
+            cards.push(PreviewCard {
+                theme: theme.clone(),
+                profile,
+                label,
+                sim: ThemePreview::new(PREVIEW_W, PREVIEW_H),
+                exprs: FrameExprs::build(&es),
+                texture: None,
+                played: 0,
+            });
+        }
     }
     (cards, active_def)
 }
@@ -255,15 +261,18 @@ fn active_profile_in(app: &AppConfig, theme: &str) -> String {
     app.profiles.get(theme).cloned().unwrap_or_else(|| store::DEFAULT_PROFILE.into())
 }
 
-/// Deferred theme/profile mutations, applied after the widget pass so the
+/// Deferred profile/preset mutations, applied after the widget pass so the
 /// snapshots can be refreshed before the write-back diff runs.
 #[derive(Debug)]
 enum Action {
-    SwitchTheme(String),
-    SwitchProfile(String),
-    NewProfile(String),
-    DeleteProfile(String),
+    /// Switch to a profile of a preset (theme folder).
+    SwitchProfile(String, String),
+    /// Create a profile under `base` preset and switch to it.
+    NewProfile(String, String),
+    DeleteProfile(String, String),
+    /// Create a custom preset from the current one, with a default profile.
     CreateCustom(String),
+    /// Delete a custom preset folder (must have no profiles left).
     DeleteTheme(String),
     OpenFolder,
 }
@@ -283,38 +292,36 @@ fn load_or_materialize(shared: &SharedSettings, theme: &str, profile: &str) -> E
 
 fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String> {
     match action {
-        Action::SwitchTheme(id) => {
-            let profile = shared.active_profile(&id);
-            let es = load_or_materialize(shared, &id, &profile);
-            *shared.effects.write().unwrap() = es;
-            let mut app = shared.app.write().unwrap();
-            app.theme = id;
-            shared.store.save_app(&app);
-            Ok(())
-        }
-        Action::SwitchProfile(profile) => {
-            let theme = shared.app.read().unwrap().theme.clone();
+        Action::SwitchProfile(theme, profile) => {
             let es = load_or_materialize(shared, &theme, &profile);
             *shared.effects.write().unwrap() = es;
             let mut app = shared.app.write().unwrap();
+            app.theme = theme.clone();
             app.profiles.insert(theme, profile);
-            shared.store.save_app(&app);
+            let snapshot = app.clone();
+            shared.store.save_app(&snapshot);
             Ok(())
         }
-        Action::NewProfile(name) => {
-            let theme = shared.app.read().unwrap().theme.clone();
+        Action::NewProfile(base, name) => {
+            if themes::builtin(&base).is_none() && !shared.store.theme_exists(&base) {
+                return Err(format!("Preset \u{201C}{}\u{201D} does not exist.", base));
+            }
             let id = store::sanitize_id(&name)
                 .ok_or_else(|| "Profile name is empty or reserved.".to_string())?;
-            if shared.store.profile_exists(&theme, &id) {
+            if shared.store.profile_exists(&base, &id) {
                 return Err(format!("A profile named \u{201C}{}\u{201D} already exists.", id));
             }
+            // The new profile starts from the base preset's themed values
+            // over the current settings, and becomes active.
             let current = shared.effects.read().unwrap().clone();
-            shared.store.save_profile(&theme, &id, &current);
-            perform_action(shared, Action::SwitchProfile(id))
+            let def = themes::load_def(&shared.store, &base).unwrap_or_default();
+            let es = themes::apply_def(&def, &current);
+            shared.store.save_profile(&base, &id, &es);
+            perform_action(shared, Action::SwitchProfile(base, id))
         }
-        Action::DeleteProfile(profile) => {
-            let theme = shared.app.read().unwrap().theme.clone();
-            // If it's the active one, move to another profile first.
+        Action::DeleteProfile(theme, profile) => {
+            // If it's the active one, move to another profile of the same
+            // preset first.
             if shared.active_profile(&theme) == profile {
                 let remaining: Vec<String> = shared
                     .store
@@ -333,7 +340,7 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
                         app.profiles.insert(theme.clone(), next.clone());
                         shared.store.save_app(&app);
                     }
-                    None => return Err("Every theme keeps at least one profile.".to_string()),
+                    None => return Err("Every preset keeps at least one profile.".to_string()),
                 }
             }
             if !shared.store.delete_profile(&theme, &profile) {
@@ -344,12 +351,12 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
         Action::CreateCustom(name) => {
             let display = name.trim().to_string();
             let id = store::sanitize_id(&name)
-                .ok_or_else(|| "Theme name is empty or reserved.".to_string())?;
+                .ok_or_else(|| "Preset name is empty or reserved.".to_string())?;
             if themes::builtin(&id).is_some() || shared.store.theme_exists(&id) {
-                return Err(format!("A theme named \u{201C}{}\u{201D} already exists.", id));
+                return Err(format!("A preset named \u{201C}{}\u{201D} already exists.", id));
             }
-            // The custom theme starts as a copy of the current theme's
-            // definition — edit it on disk (Open themes folder) to restyle.
+            // The custom preset starts as a copy of the current preset's
+            // definition — edit it on disk (Open presets folder) to restyle.
             let current_theme = shared.app.read().unwrap().theme.clone();
             let mut def = themes::load_def(&shared.store, &current_theme).unwrap_or_default();
             def.name = if display.is_empty() { id.clone() } else { display };
@@ -357,17 +364,17 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
             let current = shared.effects.read().unwrap().clone();
             let es = themes::apply_def(&def, &current);
             shared.store.save_profile(&id, store::DEFAULT_PROFILE, &es);
-            perform_action(shared, Action::SwitchTheme(id))
+            perform_action(shared, Action::SwitchProfile(id, store::DEFAULT_PROFILE.into()))
         }
         Action::DeleteTheme(id) => {
             if themes::builtin(&id).is_some() {
-                return Err("Built-in themes can't be deleted.".to_string());
+                return Err("Built-in presets can't be deleted.".to_string());
             }
-            if shared.app.read().unwrap().theme == id {
-                perform_action(shared, Action::SwitchTheme("default".into()))?;
+            if !shared.store.list_profiles(&id).is_empty() {
+                return Err("Delete the preset's profiles first.".to_string());
             }
             if !shared.store.delete_theme(&id) {
-                return Err(format!("Could not delete theme \u{201C}{}\u{201D}.", id));
+                return Err(format!("Could not delete preset \u{201C}{}\u{201D}.", id));
             }
             let mut app = shared.app.write().unwrap();
             app.profiles.remove(&id);
@@ -422,6 +429,7 @@ impl eframe::App for SettingsApp {
             active_def,
             theme_err,
             new_profile_name,
+            new_profile_base,
             new_theme_name,
             saved,
             saved_app,
@@ -448,7 +456,11 @@ impl eframe::App for SettingsApp {
         // Live-follow: re-resolve the active card and replay its animation
         // whenever tweaks land.
         if s != *saved {
-            if let Some(card) = cards.iter_mut().find(|c| c.id == app.theme) {
+            let active = active_profile_in(&app, &app.theme);
+            if let Some(card) = cards
+                .iter_mut()
+                .find(|c| c.theme == app.theme && c.profile == active)
+            {
                 card.exprs = FrameExprs::build(&s);
                 card.sim.reset();
                 card.played = 0;
@@ -466,7 +478,7 @@ impl eframe::App for SettingsApp {
                         Some(t) => t.set(img, egui::TextureOptions::LINEAR),
                         None => {
                             card.texture = Some(ctx.load_texture(
-                                format!("theme-preview-{}", card.id),
+                                format!("theme-preview-{}-{}", card.theme, card.profile),
                                 img,
                                 egui::TextureOptions::LINEAR,
                             ));
@@ -548,24 +560,25 @@ impl eframe::App for SettingsApp {
             ui.separator();
 
             egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-                themes_group(
+                profiles_group(
                     ui,
                     shared,
                     &app,
                     cards,
                     theme_err,
                     new_profile_name,
+                    new_profile_base,
                     new_theme_name,
                     &mut action,
                 );
                 ui.add_space(6.0);
-                trail_section(ui, &mut s, active_def.as_ref());
+                trail_section(ui, &mut s);
                 ui.add_space(6.0);
-                bubbles_section(ui, &mut s, active_def.as_ref());
+                bubbles_section(ui, &mut s);
                 ui.add_space(6.0);
-                sparkles_section(ui, &mut s, active_def.as_ref());
+                sparkles_section(ui, &mut s);
                 ui.add_space(6.0);
-                ripples_section(ui, &mut s, active_def.as_ref());
+                ripples_section(ui, &mut s);
                 ui.add_space(6.0);
                 ui.group(|ui| {
                     ui.label(egui::RichText::new("Performance").strong());
@@ -653,20 +666,22 @@ impl eframe::App for SettingsApp {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn themes_group(
+fn profiles_group(
     ui: &mut egui::Ui,
     shared: &SharedSettings,
     app: &AppConfig,
     cards: &[PreviewCard],
     theme_err: &mut Option<String>,
     new_profile_name: &mut String,
+    new_profile_base: &mut String,
     new_theme_name: &mut String,
     action: &mut Option<Action>,
 ) {
     ui.group(|ui| {
-        ui.label(egui::RichText::new("Themes").strong());
+        ui.label(egui::RichText::new("Profiles").strong());
         for card in cards {
-            let selected = app.theme == card.id;
+            let selected =
+                app.theme == card.theme && active_profile_in(app, &card.theme) == card.profile;
             let fill = if selected {
                 ui.visuals().selection.bg_fill
             } else {
@@ -700,7 +715,7 @@ fn themes_group(
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
                                 ui.label(
-                                    egui::RichText::new(&card.name)
+                                    egui::RichText::new(&card.label)
                                         .strong()
                                         .color(name_color),
                                 );
@@ -711,76 +726,75 @@ fn themes_group(
                                             .strong()
                                             .color(name_color),
                                     );
-                                } else if !card.builtin {
-                                    ui.label(egui::RichText::new("custom").small().weak());
                                 }
                             });
-                            // Body-size description (small was hard to read).
-                            ui.label(egui::RichText::new(&card.desc).color(desc_color));
+                            // Body-size preset tag (small was hard to read).
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "preset: {}",
+                                    card.theme
+                                ))
+                                .color(desc_color),
+                            );
                         });
                     });
                 });
             let resp = ui.interact(
                 inner.response.rect,
-                egui::Id::new(("theme-card", card.id.as_str())),
+                egui::Id::new(("profile-card", &card.theme, &card.profile)),
                 egui::Sense::click(),
             );
             if resp.clicked() && !selected {
-                *action = Some(Action::SwitchTheme(card.id.clone()));
+                *action =
+                    Some(Action::SwitchProfile(card.theme.clone(), card.profile.clone()));
             }
             ui.add_space(2.0);
         }
 
-        // Profile management for the active theme.
+        // New profile: name + base preset picker.
         ui.add_space(4.0);
-        let theme = app.theme.clone();
-        let profiles = shared.store.list_profiles(&theme);
-        let active = active_profile_in(app, &theme);
-        ui.horizontal(|ui| {
-            ui.label("Profile");
-            let mut picked: Option<String> = None;
-            egui::ComboBox::from_id_source("profile_combo")
-                .selected_text(active.clone())
-                .show_ui(ui, |ui| {
-                    for p in &profiles {
-                        if ui.selectable_label(*p == active, p).clicked() {
-                            picked = Some(p.clone());
-                        }
-                    }
-                });
-            if let Some(p) = picked {
-                *action = Some(Action::SwitchProfile(p));
-            }
-            if ui.button("Delete").clicked() {
-                *action = Some(Action::DeleteProfile(active.clone()));
-            }
-        });
         ui.horizontal(|ui| {
             ui.label("New:");
             ui.text_edit_singleline(new_profile_name);
+            let presets = theme_ids(shared);
+            egui::ComboBox::from_id_source("base_preset")
+                .selected_text(new_profile_base.clone())
+                .show_ui(ui, |ui| {
+                    for preset in &presets {
+                        ui.selectable_value(new_profile_base, preset.clone(), preset);
+                    }
+                });
             if ui.button("Create profile").clicked() {
-                *action = Some(Action::NewProfile(new_profile_name.clone()));
+                *action = Some(Action::NewProfile(
+                    new_profile_base.clone(),
+                    new_profile_name.clone(),
+                ));
                 new_profile_name.clear();
             }
         });
+        ui.horizontal(|ui| {
+            let active = active_profile_in(app, &app.theme);
+            if ui.button("Delete profile").clicked() {
+                *action = Some(Action::DeleteProfile(app.theme.clone(), active.clone()));
+            }
+            if ui.button("Open presets folder").clicked() {
+                *action = Some(Action::OpenFolder);
+            }
+        });
 
-        // Custom theme management.
+        // Custom preset management: presets are the hidden starting sets;
+        // this is the only place they surface.
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label("New theme:");
+            ui.label("New preset:");
             ui.text_edit_singleline(new_theme_name);
             if ui.button("Create from current").clicked() {
                 *action = Some(Action::CreateCustom(new_theme_name.clone()));
                 new_theme_name.clear();
             }
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Open themes folder").clicked() {
-                *action = Some(Action::OpenFolder);
-            }
-            let active_builtin =
-                cards.iter().find(|c| c.id == app.theme).map(|c| c.builtin).unwrap_or(true);
-            if !active_builtin && ui.button("Delete this theme").clicked() {
+            if themes::builtin(&app.theme).is_none()
+                && ui.button("Delete this preset").clicked()
+            {
                 *action = Some(Action::DeleteTheme(app.theme.clone()));
             }
         });
@@ -790,20 +804,8 @@ fn themes_group(
     });
 }
 
-/// Slider range for a field, overridden by the active theme's bounds.
-fn bounds_range(
-    def: Option<&ThemeDef>,
-    key: &str,
-    lo: f32,
-    hi: f32,
-) -> std::ops::RangeInclusive<f32> {
-    match def.and_then(|d| d.bounds.get(key)).copied() {
-        Some([a, b]) if b > a => a..=b,
-        _ => lo..=hi,
-    }
-}
 
-fn trail_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&ThemeDef>) {
+fn trail_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.trail.enabled, "Mouse Trail");
@@ -837,7 +839,7 @@ fn trail_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&ThemeDe
             num_or_expr_slider(
                 ui,
                 &mut s.trail.width,
-                bounds_range(def, "trail.width", 2.0, 24.0),
+                2.0..=24.0,
                 "Thickness",
             );
             match s.trail.style {
@@ -845,7 +847,7 @@ fn trail_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&ThemeDe
                     num_or_expr_slider(
                         ui,
                         &mut s.trail.hue_speed,
-                        bounds_range(def, "trail.hue_speed", 0.0, 3.0),
+                        0.0..=3.0,
                         "Rainbow speed",
                     );
                 }
@@ -930,7 +932,7 @@ fn num_or_expr_slider(
     }
 }
 
-fn bubbles_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&ThemeDef>) {
+fn bubbles_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.bubbles.enabled, "Bubbles");
@@ -959,17 +961,14 @@ fn bubbles_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Theme
             num_or_expr_slider(
                 ui,
                 &mut s.bubbles.rate,
-                bounds_range(def, "bubbles.rate", 1.0, 30.0),
+                1.0..=30.0,
                 "Bubbles per second",
             );
-            ui.add(
-                egui::Slider::new(&mut s.bubbles.size, bounds_range(def, "bubbles.size", 4.0, 40.0))
-                    .text("Size"),
-            );
+            ui.add(egui::Slider::new(&mut s.bubbles.size, 4.0..=64.0).text("Size"));
             num_or_expr_slider(
                 ui,
                 &mut s.bubbles.buoyancy,
-                bounds_range(def, "bubbles.buoyancy", -300.0, 300.0),
+                -300.0..=300.0,
                 "Float (negative falls)",
             );
             ui.add(
@@ -980,7 +979,7 @@ fn bubbles_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Theme
             num_or_expr_slider(
                 ui,
                 &mut s.bubbles.wobble,
-                bounds_range(def, "bubbles.wobble", 0.0, 100.0),
+                0.0..=100.0,
                 "Wobble",
             );
             ui.add(
@@ -992,7 +991,7 @@ fn bubbles_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Theme
                 num_or_expr_slider(
                     ui,
                     &mut s.bubbles.spin,
-                    bounds_range(def, "bubbles.spin", 0.0, 3.0),
+                    0.0..=3.0,
                     "Spin",
                 );
             }
@@ -1001,7 +1000,7 @@ fn bubbles_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Theme
     });
 }
 
-fn sparkles_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&ThemeDef>) {
+fn sparkles_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.sparkles.enabled, "Sparkles");
@@ -1024,20 +1023,14 @@ fn sparkles_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Them
             num_or_expr_slider(
                 ui,
                 &mut s.sparkles.rate,
-                bounds_range(def, "sparkles.rate", 1.0, 60.0),
+                1.0..=60.0,
                 "Sparkles per second",
             );
-            ui.add(
-                egui::Slider::new(
-                    &mut s.sparkles.size,
-                    bounds_range(def, "sparkles.size", 1.0, 12.0),
-                )
-                .text("Size"),
-            );
+            ui.add(egui::Slider::new(&mut s.sparkles.size, 1.0..=12.0).text("Size"));
             num_or_expr_slider(
                 ui,
                 &mut s.sparkles.gravity,
-                bounds_range(def, "sparkles.gravity", -200.0, 200.0),
+                -200.0..=200.0,
                 "Gravity",
             );
             ui.add(
@@ -1078,7 +1071,7 @@ fn sparkles_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Them
     });
 }
 
-fn ripples_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&ThemeDef>) {
+fn ripples_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
         ui.checkbox(&mut s.ripples.enabled, "Click ripples");
         ui.label(
@@ -1091,7 +1084,7 @@ fn ripples_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Theme
             ui.add(
                 egui::Slider::new(
                     &mut s.ripples.speed,
-                    bounds_range(def, "ripples.speed", 150.0, 1200.0),
+                    150.0..=1200.0,
                 )
                 .text("Expand speed"),
             );
@@ -1103,7 +1096,7 @@ fn ripples_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Theme
             ui.add(
                 egui::Slider::new(
                     &mut s.ripples.width,
-                    bounds_range(def, "ripples.width", 1.0, 12.0),
+                    1.0..=12.0,
                 )
                 .text("Line width"),
             );

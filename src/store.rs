@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 
-use crate::settings::{BubbleCfg, NumOrExpr, RippleCfg, SparkleCfg, TrailCfg};
+use crate::settings::{BubbleCfg, RippleCfg, SparkleCfg, TrailCfg};
 
 pub const CONFIG_VERSION: u32 = 2;
 
@@ -73,17 +73,16 @@ impl Default for EffectSettings {
     }
 }
 
-/// A theme definition: which effect sections the theme restyles, plus
-/// optional slider bounds for the settings UI. Sections left as `None` are
-/// not themed — switching to the theme keeps whatever the user had.
+/// A theme definition: which effect sections the theme restyles. Sections
+/// left as `None` are not themed — switching keeps whatever the user had.
+/// Definitions are starting values only; the settings UI uses one global
+/// slider range per knob.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeDef {
     /// Display name; the directory name is the stable id.
     pub name: String,
     pub description: String,
-    /// Slider bounds overrides keyed like "trail.width" — [min, max].
-    pub bounds: BTreeMap<String, [f32; 2]>,
     pub trail: Option<TrailCfg>,
     pub bubbles: Option<BubbleCfg>,
     pub sparkles: Option<SparkleCfg>,
@@ -426,6 +425,7 @@ fn active_profile_in(app: &AppConfig, theme: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::NumOrExpr;
 
     fn temp_store(tag: &str) -> (Store, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
@@ -546,7 +546,6 @@ mod tests {
         let def = ThemeDef {
             name: "Frost".into(),
             description: "Cool whites".into(),
-            bounds: [("bubbles.size".to_string(), [6.0, 60.0])].into_iter().collect(),
             trail: Some(TrailCfg::default()),
             bubbles: None,
             sparkles: None,

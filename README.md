@@ -13,11 +13,12 @@ ripple out when you click.
 
 ## Features
 
-- **Themes** — pick a look from the settings window; every card shows a live
-  animated preview. Built in: *Default* (the classic rainbow look), *Winter*
-  (soft white trail with pink/blue halos, drifting snowflakes, pale
-  sparkles) and *Christmas* (candy-striped trail, spinning ornament balls,
-  golden bengal-fire sparks). Custom themes are JSON files, editable by hand.
+- **Profiles** — your looks, as named profiles with a live animated preview
+  on every card. New profiles start from a **preset**: *Default* (the
+  classic rainbow look), *Winter* (soft white trail with pink/blue halos,
+  drifting snowflakes, pale sparkles) or *Christmas* (candy-striped trail,
+  spinning ornament balls, golden bengal-fire sparks). Custom presets are
+  JSON files, editable by hand.
 - **Mouse Trail** — a ribbon that flows behind the cursor. Five styles:
   *Rainbow ribbon*, *Neon comet* (single color with glow), *Ghost fade*,
   *Soft glow* (bright core with two tinted halos) and *Candy stripes*
@@ -95,26 +96,27 @@ Themes live under `%APPDATA%\MouseTrails\`:
 config.json                root config: active theme, per-theme profile
                            selection, render FPS
 themes\<id>\
-  theme.json               theme definition (custom themes only)
+  theme.json               preset definition (custom presets only)
   default.json             profile: a complete effect-settings document
   <name>.json              named profiles
 ```
 
-Every theme keeps its own settings, so tuning the trail length for *Winter*
-doesn't touch *Default*. Each theme can additionally hold several named
-**profiles** — switch between them from the Themes group. A theme definition
-may theme only some of the effects (unthemed sections keep whatever the
-profile had) and can override the settings-window slider ranges via its
-`bounds` map, e.g. `"bubbles.size": [6, 60]`.
+Profiles are the selector: every card is one profile, and clicking it
+applies that profile's complete settings. Creating a profile picks a
+**preset** as the starting point — the preset's themed sections overlay
+your current settings, unthemed sections carry over. "Reset to defaults"
+restores the profile's base preset values for themed sections and factory
+defaults for the rest.
 
-The three built-in themes ship inside the exe; their definitions are the
+The three built-in presets ship inside the exe; their definitions are the
 checked-in `themes/default.json`, `themes/winter.json` and
 `themes/christmas.json` in the repository, which also serve as templates.
-Creating a custom theme in the settings window copies the current theme's
-definition into `themes\<your-theme>\theme.json` — edit that file with any
-text editor and switch away and back to apply it. A `theme.json` on disk
-always overrides a built-in definition of the same id, so you can also edit
-a built-in theme that way.
+Creating a custom preset in the settings window copies the current preset's
+definition into `themes\<your-preset>\theme.json` — edit that file with any
+text editor and create a profile from it to apply it. A `theme.json` on
+disk overrides a built-in definition of the same id, so you can also edit a
+built-in preset that way. Presets are starting values only: slider ranges
+are global, and presets never change once a profile exists.
 
 **Expressions:** selected numeric fields accept either a number or a short
 math expression string, evaluated once per frame:

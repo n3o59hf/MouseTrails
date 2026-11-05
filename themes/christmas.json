@@ -1,16 +1,6 @@
 {
   "name": "Christmas",
   "description": "A candy-striped trail, spinning ornament balls and golden bengal-fire sparks.",
-  "bounds": {
-    "bubbles.size": [
-      8.0,
-      64.0
-    ],
-    "sparkles.size": [
-      2.0,
-      12.0
-    ]
-  },
   "trail": {
     "enabled": true,
     "style": "striped",

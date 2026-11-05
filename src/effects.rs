@@ -2022,32 +2022,70 @@ mod tests {
     }
 
     #[test]
-    fn spark_generations_are_capped() {
+    fn spark_children_appear_up_to_max_generations() {
         let mut s = EffectSettings::default();
-        s.sparkles.rate = NumOrExpr::Num(40.0);
+        // rate 0: no cursor spawns, so the population dynamics carry no RNG
+        // dependence — the test verifies the generational rules directly.
+        s.sparkles.rate = NumOrExpr::Num(0.0);
         s.sparkles.child_rate = 60.0;
         s.sparkles.max_generations = 3;
-        s.sparkles.lifetime = 1.0;
         let cfg: &'static EffectSettings = Box::leak(Box::new(s));
 
         let mut sp = Sparkles::default();
-        // 240 frames: grandchildren need two staggered lifetimes to appear,
-        // and the shared test RNG jitters spawn counts.
-        for frame in 0..240 {
-            sp.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (300.0, 0.0), 30.0, false, cfg));
+        // Three long-lived gen-1 parents: they may emit gen-2 children, but
+        // nothing may reach gen 3.
+        for i in 0..3 {
+            let mut parent = spark(i as f32 * 10.0, 100.0);
+            parent.gen = 1;
+            sp.list.push(parent);
         }
-        assert!(!sp.list.is_empty());
+        for frame in 0..30 {
+            sp.update(&ctx_at_cfg(
+                0.5 + frame as f32 / 60.0,
+                (-500.0, -500.0),
+                (0.0, 0.0),
+                30.0,
+                false,
+                cfg,
+            ));
+        }
         assert!(
             sp.list.iter().any(|s| s.gen == 2),
-            "grandchildren should exist, gens={:?}",
-            sp.list.iter().map(|s| s.gen).collect::<Vec<_>>()
+            "gen-2 children must appear"
         );
         assert!(
             sp.list.iter().all(|s| s.gen < 3),
-            "no spark may exceed max_generations, gens={:?}",
-            sp.list.iter().map(|s| s.gen).collect::<Vec<_>>()
+            "no spark may exceed max_generations"
         );
         assert!(sp.list.len() <= 300, "population cap must hold, got {}", sp.list.len());
+    }
+
+    #[test]
+    fn sparks_stop_at_max_generations_two() {
+        let mut s = EffectSettings::default();
+        s.sparkles.rate = NumOrExpr::Num(0.0);
+        s.sparkles.child_rate = 60.0;
+        s.sparkles.max_generations = 2;
+        let cfg: &'static EffectSettings = Box::leak(Box::new(s));
+
+        let mut sp = Sparkles::default();
+        for i in 0..3 {
+            let mut parent = spark(i as f32 * 10.0, 100.0);
+            parent.gen = 1;
+            sp.list.push(parent);
+        }
+        for frame in 0..30 {
+            sp.update(&ctx_at_cfg(
+                0.5 + frame as f32 / 60.0,
+                (-500.0, -500.0),
+                (0.0, 0.0),
+                30.0,
+                false,
+                cfg,
+            ));
+        }
+        assert_eq!(sp.list.len(), 3, "gen-1 sparks with max_generations 2 emit nothing");
+        assert!(sp.list.iter().all(|s| s.gen == 1));
     }
 
     #[test]
