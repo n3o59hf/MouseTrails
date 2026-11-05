@@ -194,9 +194,16 @@ pub struct RippleCfg {
     pub color: [u8; 3],
     /// Colors cycled per ring. Empty falls back to `color`.
     pub palette: Vec<[u8; 3]>,
-    /// Angular wobble amplitude as a fraction of the radius (0 = perfect
-    /// circles). Decays as a ring ages, settling into a clean circle.
+    /// Angular wobble amplitude at a ring's birth, as a fraction of the
+    /// radius (0 = clean circle). Interpolates toward `wobble_end` as the
+    /// ring ages.
     pub wobble: f32,
+    /// Angular wobble amplitude at a ring's death. Below `wobble` the ring
+    /// settles into a circle; above it, the ring breaks apart as it
+    /// expands.
+    pub wobble_end: f32,
+    /// Number of wobble lobes around the ring.
+    pub wobble_lobes: u32,
 }
 
 impl Default for RippleCfg {
@@ -210,6 +217,8 @@ impl Default for RippleCfg {
             color: [140, 230, 255],
             palette: Vec::new(),
             wobble: 0.0,
+            wobble_end: 0.0,
+            wobble_lobes: 6,
         }
     }
 }

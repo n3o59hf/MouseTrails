@@ -1108,7 +1108,16 @@ fn ripples_section(ui: &mut egui::Ui, s: &mut EffectSettings, def: Option<&Theme
                 .text("Line width"),
             );
             ui.add(
-                egui::Slider::new(&mut s.ripples.wobble, 0.0..=0.35).text("Wobble"),
+                egui::Slider::new(&mut s.ripples.wobble, 0.0..=0.35)
+                    .text("Wobble (at birth)"),
+            );
+            ui.add(
+                egui::Slider::new(&mut s.ripples.wobble_end, 0.0..=0.35)
+                    .text("Wobble (at end)"),
+            );
+            ui.add(
+                egui::Slider::new(&mut s.ripples.wobble_lobes, 1..=24)
+                    .text("Wobble lobes"),
             );
             ui.horizontal(|ui| {
                 ui.label("Color");

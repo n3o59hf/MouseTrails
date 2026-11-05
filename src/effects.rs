@@ -1324,8 +1324,14 @@ struct Ripple {
 const RING_SEGMENTS: usize = 40;
 /// Duration of the bright radial flash at the click point.
 const FLASH_SECS: f32 = 0.15;
-/// Angular wobble lobes around the ring.
-const RING_LOBES: f32 = 6.0;
+
+/// Wobble amplitude `start → end` across a ring's life, with both ends
+/// clamped to safe values.
+fn wobble_amplitude(start: f32, end: f32, t: f32) -> f32 {
+    let w0 = start.clamp(0.0, 0.35);
+    let w1 = end.clamp(0.0, 0.35);
+    w0 + (w1 - w0) * t.clamp(0.0, 1.0)
+}
 
 /// 1-(1-t)³ — fast start, gentle settle.
 fn ease_out_cubic(t: f32) -> f32 {
@@ -1415,15 +1421,17 @@ impl Effect for Ripples {
                 let radius = c.speed * c.lifetime * ease_out_cubic(t);
                 let (cr, cg, cb) = ring_color(&c.color, &c.palette, ring as usize);
 
-                // Angular wobble, decaying as the ring ages so it settles
-                // into a clean circle.
-                let wobble = c.wobble.clamp(0.0, 0.35) * k;
+                // Angular wobble, interpolating from birth amplitude to
+                // death amplitude: start > end settles into a clean circle,
+                // start < end breaks apart as it expands.
+                let wobble = wobble_amplitude(c.wobble, c.wobble_end, t);
+                let lobes = c.wobble_lobes.clamp(1, 24) as f32;
                 let width = (c.width * (0.4 + 0.6 * k)).max(0.5);
 
                 let mut pb = PathBuilder::new();
                 for seg in 0..RING_SEGMENTS {
                     let th = seg as f32 * std::f32::consts::TAU / RING_SEGMENTS as f32;
-                    let rr = radius * (1.0 + wobble * (RING_LOBES * th + r.phase).sin());
+                    let rr = radius * (1.0 + wobble * (lobes * th + r.phase).sin());
                     let px = r.x + rr * th.cos();
                     let py = r.y + rr * th.sin();
                     if seg == 0 {
@@ -1450,10 +1458,12 @@ impl Effect for Ripples {
         let mut b: Option<RectF> = None;
         for r in &self.list {
             let max_radius = c.speed * (c.lifetime + (c.rings.saturating_sub(1)) as f32 * 0.12);
-            // Wobble lobes reach max_radius * (1 + wobble); the glow pass is
-            // 2.2× and the flash 4× the core width. Anything narrower than
-            // that leaves stuck pixels when the ripple dies.
-            let wobble = c.wobble.clamp(0.0, 0.35);
+            // Wobble lobes reach max_radius * (1 + amplitude) with the
+            // amplitude the larger of birth and death values; the glow pass
+            // is 2.2× and the flash 4× the core width. Anything narrower
+            // than that leaves stuck pixels when the ripple dies.
+            let wobble =
+                wobble_amplitude(c.wobble, c.wobble_end, 1.0).max(wobble_amplitude(c.wobble, c.wobble_end, 0.0));
             let rect = RectF::point(r.x, r.y, max_radius * (1.0 + wobble) + c.width * 4.0 + 6.0);
             match &mut b {
                 Some(acc) => acc.merge(rect),
@@ -1547,6 +1557,23 @@ mod tests {
             rot: 0.0,
             spin: 0.0,
             variant: 0,
+        }
+    }
+
+    fn spark(x: f32, y: f32) -> Spark {
+        Spark {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            born: 0.0,
+            life: 100.0,
+            size: 4.0,
+            phase: 0.0,
+            freq: 8.0,
+            color: [1.0, 1.0, 1.0],
+            gen: 0,
+            emit_acc: 0.0,
         }
     }
 
@@ -1850,14 +1877,29 @@ mod tests {
     }
 
     #[test]
+    fn wobble_amplitude_interpolates_and_clamps() {
+        // Settling: full wobble at birth, clean circle at death.
+        assert_eq!(wobble_amplitude(0.3, 0.0, 0.0), 0.3);
+        assert_eq!(wobble_amplitude(0.3, 0.0, 1.0), 0.0);
+        // Breaking apart: clean circle at birth, wobbly at death.
+        assert!((wobble_amplitude(0.0, 0.2, 0.5) - 0.1).abs() < 1e-6);
+        // Both ends clamp.
+        assert_eq!(wobble_amplitude(0.9, 0.0, 0.0), 0.35);
+        assert_eq!(wobble_amplitude(0.0, 0.9, 1.0), 0.35);
+    }
+
+    #[test]
     fn wobbled_ripple_bounds_cover_the_lobes() {
         let mut s = EffectSettings::default();
-        s.ripples.wobble = 0.35;
+        // Worst case: the ring is widest at the END of its life (radius is
+        // largest there), so drive the amplitude via wobble_end.
+        s.ripples.wobble = 0.0;
+        s.ripples.wobble_end = 0.35;
         let cfg: &'static EffectSettings = Box::leak(Box::new(s));
         let mut rp = Ripples::default();
         rp.list.push(Ripple { x: 500.0, y: 500.0, born: 0.0, phase: 0.0 });
         let rect = rp.bounds(cfg).expect("bounds exist");
-        // Lobes reach max ring radius * (1 + wobble) at the end of life.
+        // Lobes reach max ring radius * (1 + amplitude) at the end of life.
         let lobes = cfg.ripples.speed * cfg.ripples.lifetime * (1.0 + 0.35);
         assert!(
             500.0 - rect.y0 >= lobes - 0.5,

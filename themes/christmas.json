@@ -134,6 +134,8 @@
         230
       ]
     ],
-    "wobble": 0.1
+    "wobble": 0.0,
+    "wobble_end": 0.12,
+    "wobble_lobes": 8
   }
 }
