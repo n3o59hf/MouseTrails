@@ -217,14 +217,32 @@ fn stroke_circle(pm: &mut PixmapMut, x: f32, y: f32, r: f32, w: f32, color: Colo
 }
 
 fn radial_fill_circle(pm: &mut PixmapMut, x: f32, y: f32, r: f32, stops: &[(f32, Color)]) {
-    if r < 0.5 {
+    radial_fill_circle_at(pm, x, y, r, x, y, r, stops);
+}
+
+/// Radial-gradient fill where the filled circle and the gradient circle are
+/// independent — lets a shaded sphere keep its fill clipped to the
+/// silhouette while the gradient center rides toward the "light". The fill
+/// never extends beyond `(fx, fy, fr)`, which the dirty-rect accounting
+/// relies on.
+fn radial_fill_circle_at(
+    pm: &mut PixmapMut,
+    fx: f32,
+    fy: f32,
+    fr: f32,
+    gx: f32,
+    gy: f32,
+    gr: f32,
+    stops: &[(f32, Color)],
+) {
+    if fr < 0.5 {
         return;
     }
     let ss: Vec<GradientStop> = stops.iter().map(|(p, c)| GradientStop::new(*p, *c)).collect();
     let shader = RadialGradient::new(
-        Point::from_xy(x, y),
-        Point::from_xy(x, y),
-        r,
+        Point::from_xy(gx, gy),
+        Point::from_xy(gx, gy),
+        gr,
         ss,
         SpreadMode::Pad,
         Transform::identity(),
@@ -234,7 +252,7 @@ fn radial_fill_circle(pm: &mut PixmapMut, x: f32, y: f32, r: f32, stops: &[(f32,
         paint.anti_alias = true;
         paint.shader = sh;
         let mut pb = PathBuilder::new();
-        add_circle(&mut pb, x, y, r);
+        add_circle(&mut pb, fx, fy, fr);
         if let Some(p) = pb.finish() {
             fill_path(pm, &p, &paint);
         }
@@ -841,7 +859,10 @@ impl Effect for Bubbles {
         }
         let mut b: Option<RectF> = None;
         for bub in &self.list {
-            let rect = RectF::point(bub.x, bub.y, bub.r + 8.0);
+            // 1.3× the radius so ornaments' hanger cap (1.2 r) and stroke
+            // anti-aliasing stay inside the dirty rect — anything outside is
+            // never erased and leaves stuck pixels once the particle dies.
+            let rect = RectF::point(bub.x, bub.y, bub.r * 1.3 + 10.0);
             match &mut b {
                 Some(acc) => acc.merge(rect),
                 None => b = Some(rect),
@@ -1003,32 +1024,37 @@ fn render_ornament(pm: &mut PixmapMut, b: &Bubble, k: f32) {
     let r = b.r;
     let alpha = 0.95 * k;
 
-    // Shaded ball: the gradient center rides toward the upper-left so the
-    // sphere reads as lit from that side.
-    radial_fill_circle(
+    // Shaded ball: the fill is clipped to the silhouette; the gradient
+    // center rides toward the upper-left "light" so the bottom-right reads
+    // darker. (An offset fill circle would paint past the silhouette and
+    // leave stale pixels outside the dirty rect.)
+    radial_fill_circle_at(
         pm,
-        b.x - r * 0.25,
-        b.y - r * 0.25,
-        r * 1.2,
+        b.x,
+        b.y,
+        r,
+        b.x - r * 0.35,
+        b.y - r * 0.35,
+        r * 1.55,
         &[
             (0.0, col((cr + 1.0) * 0.5, (cg + 1.0) * 0.5, (cb + 1.0) * 0.5, alpha)),
-            (0.55, col(cr, cg, cb, alpha)),
-            (1.0, col(cr * 0.55, cg * 0.55, cb * 0.55, alpha)),
+            (0.5, col(cr, cg, cb, alpha)),
+            (1.0, col(cr * 0.5, cg * 0.5, cb * 0.5, alpha)),
         ],
     );
-    // Accent band across the sphere, rotating with it. Endpoints inside the
-    // silhouette plus round caps keep the band on the ball.
+    // Thin sheen line across the sphere, rotating with it — the only visual
+    // cue for the spin, so kept subtle rather than striped.
     let (ca, sa) = (b.rot.cos(), b.rot.sin());
     stroke_segment(
         pm,
-        b.x - ca * r * 0.8,
-        b.y - sa * r * 0.8,
-        b.x + ca * r * 0.8,
-        b.y + sa * r * 0.8,
-        r * 0.35,
-        col((cr + 1.0) * 0.5, (cg + 1.0) * 0.5, (cb + 1.0) * 0.5, 0.5 * k),
+        b.x - ca * r * 0.55,
+        b.y - sa * r * 0.55,
+        b.x + ca * r * 0.55,
+        b.y + sa * r * 0.55,
+        (r * 0.14).max(1.2),
+        col((cr + 1.0) * 0.5, (cg + 1.0) * 0.5, (cb + 1.0) * 0.5, 0.35 * k),
     );
-    // Dark rim, fixed specular highlight, and a little hanger cap.
+    // Dark rim, fixed glossy highlight, and a little hanger cap.
     stroke_circle(pm, b.x, b.y, r, 1.2, col(cr * 0.4, cg * 0.4, cb * 0.4, 0.35 * k));
     fill_circle(pm, b.x - r * 0.35, b.y - r * 0.40, (r * 0.18).max(0.7), col(1.0, 1.0, 1.0, 0.8 * k));
     fill_circle(pm, b.x, b.y - r * 1.02, (r * 0.18).max(0.7), col(0.85, 0.68, 0.25, 0.9 * k));
@@ -1676,6 +1702,24 @@ mod tests {
             let painted = pm.data().chunks_exact(4).filter(|p| p[3] > 0).count();
             assert!(painted > 50, "{:?} trail should paint pixels, got {}", style, painted);
         }
+    }
+
+    #[test]
+    fn bubble_bounds_cover_ornament_cap() {
+        let cfg: &'static EffectSettings = Box::leak(Box::new(EffectSettings::default()));
+        let mut b = Bubbles::default();
+        // Large ball: its hanger cap reaches 1.2 r above the center, which
+        // must stay inside the dirty rect or it leaves stuck pixels.
+        let mut bub = bubble(500.0, 500.0);
+        bub.r = 60.0;
+        b.list.push(bub);
+        let rect = b.bounds(cfg).expect("bounds exist");
+        assert!(
+            500.0 - rect.y0 >= 60.0 * 1.2 + 1.0,
+            "bounds must cover the hanger cap, pad={}",
+            500.0 - rect.y0
+        );
+        assert!(rect.x1 - 500.0 >= 60.0, "bounds must cover the ball body");
     }
 
     #[test]
