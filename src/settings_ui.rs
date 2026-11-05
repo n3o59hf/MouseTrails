@@ -112,8 +112,10 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MouseTrails Settings")
-            .with_inner_size([520.0, 780.0])
-            .with_min_inner_size([460.0, 560.0])
+            // Wide default: effect sliders stretch horizontally, so a
+            // wider window means longer sliders, not dead space.
+            .with_inner_size([680.0, 780.0])
+            .with_min_inner_size([520.0, 560.0])
             .with_icon(Arc::new(icon)),
         ..Default::default()
     };
@@ -217,6 +219,8 @@ struct PreviewCard {
 
 const PREVIEW_W: u32 = 132;
 const PREVIEW_H: u32 = 74;
+/// Fixed column count for the profile gallery.
+const GALLERY_COLS: usize = 3;
 /// ~3.7 sim-seconds at the fixed 30 fps step: trail fully grown, particles
 /// mid-life, first click blast happened — a lively freeze frame.
 const PREVIEW_FRAMES: u32 = 110;
@@ -634,30 +638,56 @@ impl eframe::App for SettingsApp {
             });
         });
 
-        // The create-profile popup floats above the settings window.
+        // The create-profile popup floats above the settings window, built
+        // from an Area + Frame so it shares the main window's styling (an
+        // egui::Window renders its own title style and frame). The body
+        // asks for closure by return value.
         if *dialog_open {
-            // The local flag is egui's close binding; the body asks for
-            // closure by return value (it can't touch the flag the Window
-            // holds a mutable borrow of).
-            let mut local_open = true;
             let mut close_requested = false;
-            egui::Window::new("New profile")
-                .open(&mut local_open)
-                .collapsible(false)
-                .resizable(false)
+            egui::Area::new(egui::Id::new("new-profile-dialog"))
+                .order(egui::Order::Middle)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    close_requested = dialog_body(
-                        ui,
-                        shared,
-                        cards,
-                        dialog_name,
-                        dialog_source,
-                        dialog_preset_mode,
-                        dialog_preset_name,
-                        &mut action,
-                    );
+                    egui::Frame::none()
+                        .fill(ui.visuals().panel_fill)
+                        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                        .rounding(8.0)
+                        .inner_margin(12.0)
+                        .shadow(egui::Shadow {
+                            offset: egui::vec2(0.0, 6.0),
+                            blur: 24.0,
+                            spread: 0.0,
+                            color: egui::Color32::from_black_alpha(96),
+                        })
+                        .show(ui, |ui| {
+                            ui.set_width(560.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("New profile").strong());
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("\u{2715}").clicked() {
+                                            close_requested = true;
+                                        }
+                                    },
+                                );
+                            });
+                            ui.separator();
+                            close_requested |= dialog_body(
+                                ui,
+                                shared,
+                                &app,
+                                cards,
+                                theme_err,
+                                dialog_name,
+                                dialog_source,
+                                dialog_preset_mode,
+                                dialog_preset_name,
+                                &mut action,
+                            );
+                        });
                 });
-            if close_requested || !local_open {
+            if close_requested {
                 *dialog_open = false;
             }
         }
@@ -729,14 +759,10 @@ fn profiles_group(
             });
         });
 
-        // Gallery: wrapping grid of profile tiles plus the "+" tile.
-        let tile_w = PREVIEW_W as f32 + 16.0;
-        let cols = ((ui.available_width() + 10.0) / (tile_w + 10.0))
-            .floor()
-            .max(1.0) as usize;
+        // Gallery: fixed-count grid of profile tiles plus the "+" tile.
         egui::Grid::new("profile_gallery")
             .spacing([10.0, 10.0])
-            .num_columns(cols)
+            .num_columns(GALLERY_COLS)
             .show(ui, |ui| {
                 for card in cards {
                     let selected = app.theme == card.theme
@@ -838,13 +864,16 @@ fn plus_tile(ui: &mut egui::Ui) -> egui::Response {
     )
 }
 
-/// Body of the create-profile popup: name, source tiles (duplicate any
-/// profile, start from any preset, or create a new preset inline).
+/// Body of the create-profile popup: a name field, then one unified list of
+/// sources with live previews — the current profile (duplicated), every
+/// preset — and a "+" tile that creates a new preset on the spot.
 #[allow(clippy::too_many_arguments)]
 fn dialog_body(
     ui: &mut egui::Ui,
     shared: &SharedSettings,
+    app: &AppConfig,
     cards: &[PreviewCard],
+    theme_err: &mut Option<String>,
     name: &mut String,
     source: &mut Option<DialogSource>,
     preset_mode: &mut bool,
@@ -856,7 +885,37 @@ fn dialog_body(
     ui.add_space(4.0);
     ui.label(egui::RichText::new("Start from").strong());
 
-    let tile = |ui: &mut egui::Ui, selected: bool, title: &str, sub: &str| -> egui::Response {
+    // Unified sources: the current profile first, then every preset, each
+    // with its live preview tile.
+    let active = active_profile_in(app, &app.theme);
+    let mut sources: Vec<(DialogSource, String, String, Option<&PreviewCard>)> = Vec::new();
+    if let Some(card) = cards.iter().find(|c| c.theme == app.theme && c.profile == active) {
+        sources.push((
+            DialogSource::Duplicate(card.theme.clone(), card.profile.clone()),
+            "Current profile".to_string(),
+            format!("duplicate of {}", card.label),
+            Some(card),
+        ));
+    }
+    for theme in theme_ids(shared) {
+        let title = themes::load_def(&shared.store, &theme)
+            .map(|d| d.name)
+            .unwrap_or_else(|| theme.clone());
+        let card = cards.iter().find(|c| c.theme == theme && c.profile == store::DEFAULT_PROFILE);
+        sources.push((
+            DialogSource::Preset(theme.clone()),
+            title,
+            format!("preset: {}", theme),
+            card,
+        ));
+    }
+
+    let tile = |ui: &mut egui::Ui,
+                selected: bool,
+                title: &str,
+                sub: &str,
+                tex: Option<&egui::TextureHandle>|
+     -> egui::Response {
         let fill = if selected {
             ui.visuals().selection.bg_fill
         } else {
@@ -870,10 +929,19 @@ fn dialog_body(
             .rounding(6.0)
             .inner_margin(6.0)
             .show(ui, |ui| {
-                ui.set_min_size(egui::vec2(120.0, 44.0));
-                ui.vertical_centered(|ui| {
+                ui.set_min_width(PREVIEW_W as f32 + 4.0);
+                ui.vertical(|ui| {
+                    if let Some(tex) = tex {
+                        ui.add(egui::Image::new((
+                            tex.id(),
+                            egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32),
+                        )));
+                    } else {
+                        ui.set_min_size(egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32));
+                    }
+                    ui.add_space(2.0);
                     ui.label(egui::RichText::new(title).strong());
-                    ui.label(egui::RichText::new(sub).small().weak());
+                    ui.label(egui::RichText::new(sub).small().color(egui::Color32::from_gray(200)));
                 });
             });
         ui.interact(
@@ -883,81 +951,69 @@ fn dialog_body(
         )
     };
 
-    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-        ui.label(egui::RichText::new("Duplicate existing").small().weak());
-        let cols = 3;
-        egui::Grid::new("dup_grid").spacing([8.0, 8.0]).num_columns(cols).show(ui, |ui| {
-            let mut placed = 0;
-            for card in cards {
-                let selected =
-                    matches!(source, Some(DialogSource::Duplicate(t, p))
-                        if *t == card.theme && *p == card.profile);
-                let resp = tile(
-                    ui,
-                    selected,
-                    &card.profile,
-                    &format!("duplicate · {}", card.theme),
-                );
+    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+        egui::Grid::new("source_grid")
+            .spacing([10.0, 10.0])
+            .num_columns(GALLERY_COLS)
+            .show(ui, |ui| {
+                let mut placed = 0;
+                for (src, title, sub, card) in &sources {
+                    let selected = match (source.as_ref().map(|x| x), src) {
+                        (Some(DialogSource::Preset(a)), DialogSource::Preset(b)) => a == b,
+                        (Some(DialogSource::Duplicate(t1, p1)), DialogSource::Duplicate(t2, p2)) => {
+                            t1 == t2 && p1 == p2
+                        }
+                        _ => false,
+                    };
+                    let tex = card.and_then(|c| c.texture.as_ref());
+                    let resp = tile(ui, selected, title, sub, tex);
+                    if resp.clicked() {
+                        *source = Some(src.clone());
+                    }
+                    placed += 1;
+                    if placed % GALLERY_COLS == 0 {
+                        ui.end_row();
+                    }
+                }
+                // "+" tile: create a new preset inline.
+                let resp = tile(ui, *preset_mode, "+", "new preset", None);
                 if resp.clicked() {
-                    *source =
-                        Some(DialogSource::Duplicate(card.theme.clone(), card.profile.clone()));
+                    *preset_mode = !*preset_mode;
                 }
                 placed += 1;
-                if placed % cols == 0 {
+                if placed % GALLERY_COLS != 0 {
                     ui.end_row();
-                }
-            }
-            if placed % cols != 0 {
-                ui.end_row();
-            }
-        });
-
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new("Presets").small().weak());
-        egui::Grid::new("preset_grid").spacing([8.0, 8.0]).num_columns(cols).show(ui, |ui| {
-            let mut placed = 0;
-            for theme in theme_ids(shared) {
-                let selected = matches!(source, Some(DialogSource::Preset(t)) if *t == theme);
-                let resp = tile(ui, selected, &theme, "preset");
-                if resp.clicked() {
-                    *source = Some(DialogSource::Preset(theme.clone()));
-                }
-                placed += 1;
-                if placed % cols == 0 {
-                    ui.end_row();
-                }
-            }
-            // "+" tile: create a new preset inline.
-            let resp = tile(ui, *preset_mode, "+", "new preset");
-            if resp.clicked() {
-                *preset_mode = !*preset_mode;
-            }
-            placed += 1;
-            if placed % cols != 0 {
-                ui.end_row();
-            }
-        });
-        if *preset_mode {
-            ui.horizontal(|ui| {
-                ui.text_edit_singleline(preset_name);
-                if ui.button("Create preset").clicked() {
-                    // Created from the current preset's definition; it then
-                    // appears among the source tiles above.
-                    *action = Some(Action::CreateCustom(preset_name.clone(), false));
-                    preset_name.clear();
-                    *preset_mode = false;
                 }
             });
-        }
     });
 
+    // The inline new-preset form lives outside the scroll area so toggling
+    // the "+" tile is always visibly answered.
+    if *preset_mode {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("New preset:");
+            ui.text_edit_singleline(preset_name);
+            if ui.button("Create").clicked() {
+                // Created from the current preset's definition; it then
+                // appears among the source tiles above.
+                *action = Some(Action::CreateCustom(preset_name.clone(), false));
+                preset_name.clear();
+                *preset_mode = false;
+            }
+        });
+    }
+
+    if let Some(err) = &*theme_err {
+        ui.add_space(4.0);
+        ui.colored_label(egui::Color32::RED, err.clone());
+    }
+
     ui.add_space(8.0);
+    let mut close = false;
     ui.horizontal(|ui| {
         let ready = !name.trim().is_empty() && source.is_some();
-        if ui
-            .add_enabled(ready, egui::Button::new("Create"))
-            .clicked()
-        {
+        if ui.add_enabled(ready, egui::Button::new("Create")).clicked() {
             match source.clone() {
                 Some(DialogSource::Preset(base)) => {
                     *action = Some(Action::NewProfile(base, name.clone()));
@@ -970,19 +1026,17 @@ fn dialog_body(
             name.clear();
             *source = None;
             *preset_mode = false;
-            return true;
+            close = true;
         }
         if ui.button("Cancel").clicked() {
             name.clear();
             *source = None;
             *preset_mode = false;
-            return true;
+            close = true;
         }
-        false
     });
-    false
+    close
 }
-
 
 fn trail_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
