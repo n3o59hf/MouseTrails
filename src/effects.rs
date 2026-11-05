@@ -331,7 +331,7 @@ impl Effect for Trail {
             return;
         }
 
-        self.hue = (self.hue + ctx.dt * c.hue_speed * 0.5).rem_euclid(1.0);
+        self.hue = (self.hue + ctx.dt * c.hue_speed.value() * 0.5).rem_euclid(1.0);
 
         // Consume the sampler's raw cursor positions, interpolating each hop
         // down to SPACING_PX so fast movement stays a smooth, dense path.
@@ -415,7 +415,7 @@ impl Effect for Trail {
                         if k <= 0.0 {
                             continue;
                         }
-                        let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                        let width = (c.width.value() * (0.25 + 0.75 * k)).max(0.6);
                         let h = (self.hue + idx as f32 * 0.004).rem_euclid(1.0);
                         let (r, g, b) = hsv(h, 0.9, 1.0);
                         let start = if j == 1 { pt(run[0]) } else { mid(pt(run[j - 1]), pt(idx)) };
@@ -428,7 +428,7 @@ impl Effect for Trail {
                         let age = now - self.pts[li].t;
                         let k = (1.0 - age / len).clamp(0.0, 1.0);
                         if k > 0.0 {
-                            let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                            let width = (c.width.value() * (0.25 + 0.75 * k)).max(0.6);
                             let h = (self.hue + li as f32 * 0.004).rem_euclid(1.0);
                             let (r, g, b) = hsv(h, 0.9, 1.0);
                             let start = mid(pt(run[m - 2]), pt(li));
@@ -446,7 +446,7 @@ impl Effect for Trail {
                 }
                 // Crisp bright head right under the cursor.
                 let head = self.pts.back().unwrap();
-                fill_circle(pm, head.x, head.y, (c.width * 0.35).max(1.5), col(1.0, 1.0, 1.0, 0.75));
+                fill_circle(pm, head.x, head.y, (c.width.value() * 0.35).max(1.5), col(1.0, 1.0, 1.0, 0.75));
             }
             TrailStyle::Neon | TrailStyle::Ghost => {
                 let (r0, g0, b0) = if c.style == TrailStyle::Neon {
@@ -477,10 +477,10 @@ impl Effect for Trail {
                     pb.line_to(self.pts[*run.last().unwrap()].x, self.pts[*run.last().unwrap()].y);
                     if let Some(path) = pb.finish() {
                         if c.style == TrailStyle::Neon {
-                            stroke_path(pm, &path, c.width * 2.4, col(r0, g0, b0, 0.20));
-                            stroke_path(pm, &path, c.width * 0.75, col(r0, g0, b0, 0.95));
+                            stroke_path(pm, &path, c.width.value() * 2.4, col(r0, g0, b0, 0.20));
+                            stroke_path(pm, &path, c.width.value() * 0.75, col(r0, g0, b0, 0.95));
                         } else {
-                            stroke_path(pm, &path, c.width, col(r0, g0, b0, 0.35));
+                            stroke_path(pm, &path, c.width.value(), col(r0, g0, b0, 0.35));
                         }
                     }
                 }
@@ -496,7 +496,7 @@ impl Effect for Trail {
                         if k <= 0.0 {
                             continue;
                         }
-                        let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                        let width = (c.width.value() * (0.25 + 0.75 * k)).max(0.6);
                         let start =
                             if j == 1 { pt(run[0]) } else { mid(pt(run[j - 1]), pt(idx)) };
                         let end = mid(pt(idx), pt(run[j + 1]));
@@ -533,7 +533,7 @@ impl Effect for Trail {
                         let age = now - self.pts[li].t;
                         let k = (1.0 - age / len).clamp(0.0, 1.0);
                         if k > 0.0 {
-                            let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                            let width = (c.width.value() * (0.25 + 0.75 * k)).max(0.6);
                             let start = mid(pt(run[m - 2]), pt(li));
                             stroke_segment(
                                 pm,
@@ -553,7 +553,7 @@ impl Effect for Trail {
                     pm,
                     head.x,
                     head.y,
-                    (c.width * 0.35).max(1.5),
+                    (c.width.value() * 0.35).max(1.5),
                     col(core[0], core[1], core[2], 0.75),
                 );
             }
@@ -576,7 +576,7 @@ impl Effect for Trail {
                         if k <= 0.0 {
                             continue;
                         }
-                        let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                        let width = (c.width.value() * (0.25 + 0.75 * k)).max(0.6);
                         let (r, g, b) = stripe_color(&c.palette, arc[j], c.stripe_len);
                         let start =
                             if j == 1 { pt(run[0]) } else { mid(pt(run[j - 1]), pt(idx)) };
@@ -588,7 +588,7 @@ impl Effect for Trail {
                         let age = now - self.pts[li].t;
                         let k = (1.0 - age / len).clamp(0.0, 1.0);
                         if k > 0.0 {
-                            let width = (c.width * (0.25 + 0.75 * k)).max(0.6);
+                            let width = (c.width.value() * (0.25 + 0.75 * k)).max(0.6);
                             let (r, g, b) = stripe_color(&c.palette, arc[m - 1], c.stripe_len);
                             let start = mid(pt(run[m - 2]), pt(li));
                             stroke_segment(
@@ -605,7 +605,7 @@ impl Effect for Trail {
                 }
                 // White head dot keeps the tip crisp, like Rainbow.
                 let head = self.pts.back().unwrap();
-                fill_circle(pm, head.x, head.y, (c.width * 0.35).max(1.5), col(1.0, 1.0, 1.0, 0.75));
+                fill_circle(pm, head.x, head.y, (c.width.value() * 0.35).max(1.5), col(1.0, 1.0, 1.0, 0.75));
             }
         }
     }
@@ -615,7 +615,7 @@ impl Effect for Trail {
         if !c.enabled || self.pts.is_empty() {
             return None;
         }
-        let pad = c.width * 1.4 + 6.0;
+        let pad = c.width.value() * 1.4 + 6.0;
         let mut b = RectF::point(self.pts.front().unwrap().x, self.pts.front().unwrap().y, pad);
         for p in &self.pts {
             b.merge(RectF::point(p.x, p.y, pad));
@@ -724,7 +724,7 @@ impl Effect for Bubbles {
         }
         let fade = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
 
-        self.acc += c.rate.max(0.0) * ctx.dt * self.speed_mod * fade;
+        self.acc += c.rate.value().max(0.0) * ctx.dt * self.speed_mod * fade;
         let momentum = c.momentum.clamp(0.0, 1.0);
         while self.acc >= 1.0 {
             self.acc -= 1.0;
@@ -748,9 +748,9 @@ impl Effect for Bubbles {
                     // direction; ornaments pick up spin from cursor speed,
                     // capped so a violent flick can't go dizzy.
                     spin: match c.shape {
-                        BubbleShape::Snowflake => c.spin * dir,
+                        BubbleShape::Snowflake => c.spin.value() * dir,
                         BubbleShape::Ornament => {
-                            (speed * ORNAMENT_SPIN_PER_SPEED * c.spin.max(0.0)).min(12.0) * dir
+                            (speed * ORNAMENT_SPIN_PER_SPEED * c.spin.value().max(0.0)).min(12.0) * dir
                         }
                         BubbleShape::Bubble => 0.0,
                     },
@@ -796,8 +796,8 @@ impl Effect for Bubbles {
         let drag = (-c.drag.max(0.0) * ctx.dt).exp();
         let rotatable = matches!(c.shape, BubbleShape::Snowflake | BubbleShape::Ornament);
         for b in self.list.iter_mut() {
-            b.vy -= c.buoyancy * ctx.dt;
-            b.vx += (ctx.now * b.wob_freq + b.wob_phase).sin() * c.wobble * 4.0 * ctx.dt;
+            b.vy -= c.buoyancy.value() * ctx.dt;
+            b.vx += (ctx.now * b.wob_freq + b.wob_phase).sin() * c.wobble.value() * 4.0 * ctx.dt;
             b.vx *= drag;
             b.vy *= drag;
             b.x += b.vx * ctx.dt;
@@ -1103,7 +1103,7 @@ impl Effect for Sparkles {
         }
         let ramp = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
         if ramp > 0.0 {
-            self.acc += c.rate.max(0.0) * ctx.dt * ramp;
+            self.acc += c.rate.value().max(0.0) * ctx.dt * ramp;
         }
         let momentum = c.momentum.clamp(0.0, 1.0);
         while self.acc >= 1.0 {
@@ -1172,7 +1172,7 @@ impl Effect for Sparkles {
         self.list.retain(|s| ctx.now - s.born < s.life);
 
         for s in self.list.iter_mut() {
-            s.vy += c.gravity * ctx.dt;
+            s.vy += c.gravity.value() * ctx.dt;
             let drag = (-c.drag.max(0.0) * ctx.dt).exp();
             s.vx *= drag;
             s.vy *= drag;
@@ -1416,7 +1416,7 @@ impl Effects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::BubbleCfg;
+    use crate::settings::{BubbleCfg, NumOrExpr};
 
     fn bubble(x: f32, y: f32) -> Bubble {
         Bubble {
@@ -1768,15 +1768,15 @@ mod tests {
         s.bubbles.shape = shape;
         s.bubbles.momentum = momentum;
         s.bubbles.drag = drag;
-        s.bubbles.spin = spin;
-        s.bubbles.rate = 30.0;
+        s.bubbles.spin = NumOrExpr::Num(spin);
+        s.bubbles.rate = NumOrExpr::Num(30.0);
         s
     }
 
     #[test]
     fn spark_generations_are_capped() {
         let mut s = EffectSettings::default();
-        s.sparkles.rate = 40.0;
+        s.sparkles.rate = NumOrExpr::Num(40.0);
         s.sparkles.child_rate = 60.0;
         s.sparkles.max_generations = 3;
         s.sparkles.lifetime = 1.0;
@@ -1813,7 +1813,7 @@ mod tests {
     #[test]
     fn spark_palette_cycles_and_children_inherit_color() {
         let mut s = EffectSettings::default();
-        s.sparkles.rate = 40.0;
+        s.sparkles.rate = NumOrExpr::Num(40.0);
         s.sparkles.child_rate = 60.0;
         s.sparkles.max_generations = 2;
         s.sparkles.palette = vec![[255, 0, 0], [0, 255, 0]];

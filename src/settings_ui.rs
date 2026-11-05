@@ -6,7 +6,7 @@ use eframe::egui;
 use windows::core::{w, PCWSTR};
 
 use crate::icon;
-use crate::settings::{BubbleShape, SparkShape, TrailStyle};
+use crate::settings::{BubbleShape, NumOrExpr, SparkShape, TrailStyle};
 use crate::startup;
 use crate::store::{AppConfig, EffectSettings, SharedSettings};
 
@@ -363,13 +363,10 @@ fn trail_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
                     .text("Length")
                     .suffix(" s"),
             );
-            ui.add(egui::Slider::new(&mut s.trail.width, 2.0..=24.0).text("Thickness"));
+            num_or_expr_slider(ui, &mut s.trail.width, 2.0..=24.0, "Thickness");
             match s.trail.style {
                 TrailStyle::Rainbow => {
-                    ui.add(
-                        egui::Slider::new(&mut s.trail.hue_speed, 0.0..=3.0)
-                            .text("Rainbow speed"),
-                    );
+                    num_or_expr_slider(ui, &mut s.trail.hue_speed, 0.0..=3.0, "Rainbow speed");
                 }
                 TrailStyle::Neon | TrailStyle::Ghost => {
                     ui.horizontal(|ui| {
@@ -416,6 +413,42 @@ fn palette_row(ui: &mut egui::Ui, palette: &mut Vec<[u8; 3]>) {
     });
 }
 
+/// Slider for a plain number, or a monospace expression editor when the
+/// field holds an expression (evaluated once per frame — see `expr`).
+/// Dragging the slider converts an expression back to a constant parsed
+/// from its own text.
+fn num_or_expr_slider(
+    ui: &mut egui::Ui,
+    field: &mut NumOrExpr,
+    range: std::ops::RangeInclusive<f32>,
+    text: &str,
+) {
+    match field {
+        NumOrExpr::Num(n) => {
+            let mut v = *n;
+            if ui.add(egui::Slider::new(&mut v, range).text(text)).changed() {
+                *field = NumOrExpr::Num(v);
+            }
+        }
+        NumOrExpr::Expr(src) => {
+            let mut revert = false;
+            ui.horizontal(|ui| {
+                ui.label(text);
+                ui.add(
+                    egui::TextEdit::singleline(src)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(180.0),
+                );
+                revert = ui.small_button("=").clicked();
+            });
+            if revert {
+                let parsed = src.trim().parse::<f32>().unwrap_or(*range.start());
+                *field = NumOrExpr::Num(parsed.clamp(*range.start(), *range.end()));
+            }
+        }
+    }
+}
+
 fn bubbles_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
@@ -442,28 +475,27 @@ fn bubbles_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
             .weak(),
         );
         if s.bubbles.enabled {
-            ui.add(
-                egui::Slider::new(&mut s.bubbles.rate, 1.0..=30.0)
-                    .text("Bubbles per second"),
-            );
+            num_or_expr_slider(ui, &mut s.bubbles.rate, 1.0..=30.0, "Bubbles per second");
             ui.add(egui::Slider::new(&mut s.bubbles.size, 4.0..=40.0).text("Size"));
-            ui.add(
-                egui::Slider::new(&mut s.bubbles.buoyancy, -300.0..=300.0)
-                    .text("Float (negative falls)"),
+            num_or_expr_slider(
+                ui,
+                &mut s.bubbles.buoyancy,
+                -300.0..=300.0,
+                "Float (negative falls)",
             );
             ui.add(
                 egui::Slider::new(&mut s.bubbles.lifetime, 0.5..=5.0)
                     .text("Lifetime")
                     .suffix(" s"),
             );
-            ui.add(egui::Slider::new(&mut s.bubbles.wobble, 0.0..=100.0).text("Wobble"));
+            num_or_expr_slider(ui, &mut s.bubbles.wobble, 0.0..=100.0, "Wobble");
             ui.add(
                 egui::Slider::new(&mut s.bubbles.momentum, 0.0..=1.0)
                     .text("Cursor momentum"),
             );
             ui.add(egui::Slider::new(&mut s.bubbles.drag, 0.0..=10.0).text("Air drag"));
             if s.bubbles.shape != BubbleShape::Bubble {
-                ui.add(egui::Slider::new(&mut s.bubbles.spin, 0.0..=3.0).text("Spin"));
+                num_or_expr_slider(ui, &mut s.bubbles.spin, 0.0..=3.0, "Spin");
             }
             palette_row(ui, &mut s.bubbles.palette);
         }
@@ -490,14 +522,9 @@ fn sparkles_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
             egui::RichText::new("Tiny sparkles scatter as the cursor moves.").small().weak(),
         );
         if s.sparkles.enabled {
-            ui.add(
-                egui::Slider::new(&mut s.sparkles.rate, 1.0..=60.0)
-                    .text("Sparkles per second"),
-            );
+            num_or_expr_slider(ui, &mut s.sparkles.rate, 1.0..=60.0, "Sparkles per second");
             ui.add(egui::Slider::new(&mut s.sparkles.size, 1.0..=12.0).text("Size"));
-            ui.add(
-                egui::Slider::new(&mut s.sparkles.gravity, -200.0..=200.0).text("Gravity"),
-            );
+            num_or_expr_slider(ui, &mut s.sparkles.gravity, -200.0..=200.0, "Gravity");
             ui.add(
                 egui::Slider::new(&mut s.sparkles.lifetime, 0.3..=3.0)
                     .text("Lifetime")

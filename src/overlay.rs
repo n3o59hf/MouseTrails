@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::effects::{self, Effects};
 use crate::updater;
-use crate::store::SharedSettings;
+use crate::store::{EffectSettings, SharedSettings};
 use crate::settings_ui::SettingsUiManager;
 use crate::startup;
 
@@ -399,6 +399,10 @@ struct App {
 
     effects: Effects,
     prev_bounds: Option<effects::RectF>,
+    /// Parsed per-frame expressions, rebuilt whenever the raw settings
+    /// change; resolved against the frame clock once per tick.
+    frame_exprs: crate::expr::FrameExprs,
+    last_raw: Option<EffectSettings>,
     last_tick: Instant,
     clock: f32,
     timer_period: u32,
@@ -418,6 +422,8 @@ struct App {
 
 impl App {
     fn new(shared: Arc<SharedSettings>) -> Self {
+        let initial = shared.effects.read().unwrap().clone();
+        let frame_exprs = crate::expr::FrameExprs::build(&initial);
         Self {
             shared,
             ui: SettingsUiManager::new(),
@@ -432,6 +438,8 @@ impl App {
             vy: 0,
             effects: Effects::new(),
             prev_bounds: None,
+            last_raw: Some(initial),
+            frame_exprs,
             last_tick: Instant::now(),
             clock: 0.0,
             timer_period: 15,
@@ -646,7 +654,7 @@ impl App {
         // 100ms.
         self.clock = self.t0.elapsed().as_secs_f32();
 
-        let cfg = self.shared.effects.read().unwrap().clone();
+        let raw = self.shared.effects.read().unwrap().clone();
         let render_fps = self.shared.app.read().unwrap().render_fps;
 
         let want = ((1000.0 / render_fps.clamp(24, 240) as f32) as u32).max(8);
@@ -706,6 +714,14 @@ impl App {
         self.prev_left = left;
 
         let moved = ((mx - prev.0).powi(2) + (my - prev.1).powi(2)).sqrt();
+
+        // Rebuild the parsed expressions only when the settings actually
+        // changed, then resolve them once for this frame.
+        if self.last_raw.as_ref() != Some(&raw) {
+            self.frame_exprs = crate::expr::FrameExprs::build(&raw);
+            self.last_raw = Some(raw.clone());
+        }
+        let cfg = self.frame_exprs.resolve(self.clock, vmag, moved > 0.5);
 
         // Feed the sampler's high-frequency cursor path into the trail. If the
         // sampler thread isn't available for some reason, fall back to a

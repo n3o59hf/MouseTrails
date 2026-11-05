@@ -1,5 +1,26 @@
 use serde::{Deserialize, Serialize};
 
+/// A numeric setting that is either a plain number or a tiny math expression
+/// evaluated once per frame. Expressions use variables `t`, `speed`,
+/// `moving`, `pi` and are documented for theme authors.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum NumOrExpr {
+    Num(f32),
+    Expr(String),
+}
+
+impl NumOrExpr {
+    /// Numeric value of a resolved field. Expressions never reach the effect
+    /// code — they resolve to `Num` every frame before rendering.
+    pub fn value(&self) -> f32 {
+        match self {
+            NumOrExpr::Num(n) => *n,
+            NumOrExpr::Expr(_) => 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TrailStyle {
@@ -19,8 +40,10 @@ pub struct TrailCfg {
     pub enabled: bool,
     pub style: TrailStyle,
     pub length_secs: f32,
-    pub width: f32,
-    pub hue_speed: f32,
+    /// Expression-capable per frame (variables t, speed, moving).
+    pub width: NumOrExpr,
+    /// Expression-capable per frame (variable t).
+    pub hue_speed: NumOrExpr,
     pub color: [u8; 3],
     /// Style palette. Soft = [core, edge1, edge2]; Striped = cycling stripe
     /// colors. Empty falls back to per-style defaults.
@@ -35,8 +58,8 @@ impl Default for TrailCfg {
             enabled: true,
             style: TrailStyle::Rainbow,
             length_secs: 0.55,
-            width: 10.0,
-            hue_speed: 1.0,
+            width: NumOrExpr::Num(10.0),
+            hue_speed: NumOrExpr::Num(1.0),
             color: [51, 217, 255],
             palette: Vec::new(),
             stripe_len: 14.0,
@@ -60,11 +83,14 @@ pub enum BubbleShape {
 pub struct BubbleCfg {
     pub enabled: bool,
     pub shape: BubbleShape,
-    pub rate: f32,
+    /// Expression-capable per frame (variables t, speed, moving).
+    pub rate: NumOrExpr,
     pub size: f32,
-    pub buoyancy: f32,
+    /// Expression-capable per frame (variable t). Negative values sink.
+    pub buoyancy: NumOrExpr,
     pub lifetime: f32,
-    pub wobble: f32,
+    /// Expression-capable per frame (variable t).
+    pub wobble: NumOrExpr,
     /// Colors cycled per particle. Empty falls back to the built-in bubble
     /// hues.
     pub palette: Vec<[u8; 3]>,
@@ -73,8 +99,9 @@ pub struct BubbleCfg {
     /// Exponential velocity decay per second — higher calms movement faster.
     pub drag: f32,
     /// Spin scale for rotatable shapes (snowflake: random direction at this
-    /// rate; ornament: scales the speed-derived spin). rad/s.
-    pub spin: f32,
+    /// rate; ornament: scales the speed-derived spin). Expression-capable
+    /// per frame (variable t). rad/s.
+    pub spin: NumOrExpr,
 }
 
 impl Default for BubbleCfg {
@@ -82,15 +109,15 @@ impl Default for BubbleCfg {
         Self {
             enabled: true,
             shape: BubbleShape::Bubble,
-            rate: 9.0,
+            rate: NumOrExpr::Num(9.0),
             size: 14.0,
-            buoyancy: 85.0,
+            buoyancy: NumOrExpr::Num(85.0),
             lifetime: 2.4,
-            wobble: 30.0,
+            wobble: NumOrExpr::Num(30.0),
             palette: Vec::new(),
             momentum: 0.35,
             drag: 2.2,
-            spin: 0.0,
+            spin: NumOrExpr::Num(0.0),
         }
     }
 }
@@ -110,9 +137,11 @@ pub enum SparkShape {
 pub struct SparkleCfg {
     pub enabled: bool,
     pub shape: SparkShape,
-    pub rate: f32,
+    /// Expression-capable per frame (variables t, speed, moving).
+    pub rate: NumOrExpr,
     pub size: f32,
-    pub gravity: f32,
+    /// Expression-capable per frame (variable t).
+    pub gravity: NumOrExpr,
     pub lifetime: f32,
     pub color: [u8; 3],
     /// Colors cycled per particle. Empty falls back to `color`.
@@ -138,9 +167,9 @@ impl Default for SparkleCfg {
         Self {
             enabled: true,
             shape: SparkShape::Star,
-            rate: 40.0,
+            rate: NumOrExpr::Num(40.0),
             size: 4.0,
-            gravity: -30.0,
+            gravity: NumOrExpr::Num(-30.0),
             lifetime: 0.9,
             color: [255, 212, 64],
             palette: Vec::new(),

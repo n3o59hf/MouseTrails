@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 
-use crate::settings::{BubbleCfg, RippleCfg, SparkleCfg, TrailCfg};
+use crate::settings::{BubbleCfg, NumOrExpr, RippleCfg, SparkleCfg, TrailCfg};
 
 pub const CONFIG_VERSION: u32 = 2;
 
@@ -142,10 +142,6 @@ impl Store {
 
     pub fn new(base: impl Into<PathBuf>) -> Self {
         Self { base: base.into() }
-    }
-
-    pub fn base(&self) -> &Path {
-        &self.base
     }
 
     fn app_path(&self) -> PathBuf {
@@ -347,12 +343,6 @@ pub struct SharedSettings {
 }
 
 impl SharedSettings {
-    /// Name of the profile active for `theme` ("default" unless recorded).
-    pub fn active_profile(&self, theme: &str) -> String {
-        let app = self.app.read().unwrap();
-        app.profiles.get(theme).cloned().unwrap_or_else(|| DEFAULT_PROFILE.into())
-    }
-
     /// Persist the current effect settings into the active theme's active
     /// profile file.
     pub fn save_effects(&self) {
@@ -429,7 +419,7 @@ mod tests {
 
         let es = store.load_profile("default", "default").unwrap();
         assert_eq!(es.trail.style, crate::settings::TrailStyle::Neon);
-        assert_eq!(es.trail.width, 12.0);
+        assert_eq!(es.trail.width, NumOrExpr::Num(12.0));
         assert_eq!(es.sparkles.color, [1, 2, 3]);
         assert!(!es.ripples.enabled);
 
@@ -480,12 +470,12 @@ mod tests {
     fn profiles_round_trip_and_list_and_delete() {
         let (store, _dir) = temp_store("profiles");
         let mut es = EffectSettings::default();
-        es.trail.width = 7.5;
+        es.trail.width = NumOrExpr::Num(7.5);
         store.save_profile("default", "cozy", &es);
         store.save_profile("default", "default", &EffectSettings::default());
 
         assert_eq!(store.list_profiles("default"), vec!["cozy".to_string(), "default".to_string()]);
-        assert_eq!(store.load_profile("default", "cozy").unwrap().trail.width, 7.5);
+        assert_eq!(store.load_profile("default", "cozy").unwrap().trail.width, NumOrExpr::Num(7.5));
 
         assert!(store.delete_profile("default", "cozy"));
         assert_eq!(store.list_profiles("default"), vec!["default".to_string()]);
@@ -521,11 +511,11 @@ mod tests {
     fn ensure_profile_never_clobbers() {
         let (store, _dir) = temp_store("ensure");
         let mut es = EffectSettings::default();
-        es.trail.width = 1.0;
+        es.trail.width = NumOrExpr::Num(1.0);
         store.ensure_profile("default", "default", &es);
-        assert_eq!(store.load_profile("default", "default").unwrap().trail.width, 1.0);
-        es.trail.width = 99.0;
+        assert_eq!(store.load_profile("default", "default").unwrap().trail.width, NumOrExpr::Num(1.0));
+        es.trail.width = NumOrExpr::Num(99.0);
         store.ensure_profile("default", "default", &es);
-        assert_eq!(store.load_profile("default", "default").unwrap().trail.width, 1.0);
+        assert_eq!(store.load_profile("default", "default").unwrap().trail.width, NumOrExpr::Num(1.0));
     }
 }

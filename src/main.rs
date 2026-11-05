@@ -4,6 +4,7 @@ mod effects;
 mod overlay;
 mod settings;
 mod store;
+mod expr;
 mod updater;
 mod settings_ui;
 mod startup;
