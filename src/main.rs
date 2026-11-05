@@ -3,6 +3,7 @@
 mod effects;
 mod overlay;
 mod settings;
+mod store;
 mod updater;
 mod settings_ui;
 mod startup;
@@ -84,14 +85,36 @@ fn main() {
         return;
     }
 
-    let shared = Arc::new(settings::SharedSettings {
-        settings: RwLock::new(settings::Settings::load()),
+    let store = store::Store::from_default();
+
+    // First launch (no config yet): every effect is on by default — open the
+    // settings window right away so the user sees what they can play with.
+    // Checked before load_app(), which puts a fresh config on disk.
+    let first_run = !store::config_exists();
+
+    let app_cfg = store.load_app();
+
+    // The active profile may not exist yet (fresh install, or a theme whose
+    // profile hasn't been materialized): fall back to defaults and write
+    // them out so the file is editable from the start.
+    let profile = app_cfg
+        .profiles
+        .get(&app_cfg.theme)
+        .cloned()
+        .unwrap_or_else(|| store::DEFAULT_PROFILE.to_string());
+    let effects = store.load_profile(&app_cfg.theme, &profile).unwrap_or_else(|| {
+        let d = store::EffectSettings::default();
+        store.save_profile(&app_cfg.theme, &profile, &d);
+        d
+    });
+
+    let shared = Arc::new(store::SharedSettings {
+        store,
+        effects: RwLock::new(effects),
+        app: RwLock::new(app_cfg),
         update: Mutex::new(updater::UpdateState::initial()),
         overlay_hwnd: std::sync::atomic::AtomicIsize::new(0),
     });
 
-    // First launch (no config yet): every effect is on by default — open the
-    // settings window right away so the user sees what they can play with.
-    let first_run = !settings::config_exists();
     overlay::run(shared, want_settings || first_run);
 }

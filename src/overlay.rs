@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::effects::{self, Effects};
 use crate::updater;
-use crate::settings::SharedSettings;
+use crate::store::SharedSettings;
 use crate::settings_ui::SettingsUiManager;
 use crate::startup;
 
@@ -646,9 +646,10 @@ impl App {
         // 100ms.
         self.clock = self.t0.elapsed().as_secs_f32();
 
-        let cfg = self.shared.settings.read().unwrap().clone();
+        let cfg = self.shared.effects.read().unwrap().clone();
+        let render_fps = self.shared.app.read().unwrap().render_fps;
 
-        let want = ((1000.0 / cfg.render_fps.clamp(24, 240) as f32) as u32).max(8);
+        let want = ((1000.0 / render_fps.clamp(24, 240) as f32) as u32).max(8);
         if want != self.timer_period {
             self.timer_period = want;
             unsafe {

@@ -6,8 +6,9 @@ use eframe::egui;
 use windows::core::{w, PCWSTR};
 
 use crate::icon;
-use crate::settings::{self, BubbleShape, Settings, SparkShape, TrailStyle};
+use crate::settings::{BubbleShape, SparkShape, TrailStyle};
 use crate::startup;
+use crate::store::{AppConfig, EffectSettings, SharedSettings};
 
 pub enum UiMsg {
     Show,
@@ -31,7 +32,7 @@ impl SettingsUiManager {
         Self { tx: None, alive: Arc::new(AtomicBool::new(false)) }
     }
 
-    pub fn open(&mut self, shared: &Arc<settings::SharedSettings>) {
+    pub fn open(&mut self, shared: &Arc<SharedSettings>) {
         if self.alive.load(std::sync::atomic::Ordering::Relaxed) {
             if let Some(tx) = &self.tx {
                 if tx.send(UiMsg::Show).is_ok() {
@@ -78,17 +79,19 @@ fn show_settings_window() {
     }
 }
 
-fn run_ui(shared: Arc<settings::SharedSettings>, rx: Receiver<UiMsg>) {
+fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
     let icon_rgba = icon::icon_rgba_straight();
     let icon = egui::IconData { width: 32, height: 32, rgba: icon_rgba };
 
-    let saved = shared.settings.read().unwrap().clone();
+    let saved = shared.effects.read().unwrap().clone();
+    let saved_app = shared.app.read().unwrap().clone();
     let app = SettingsApp {
         shared,
         rx,
         startup: startup::is_enabled(),
         startup_err: None,
         saved,
+        saved_app,
         updates: 0,
     };
 
@@ -118,13 +121,13 @@ fn run_ui(shared: Arc<settings::SharedSettings>, rx: Receiver<UiMsg>) {
 /// Hide instead of close: the settings window is a singleton that lives as
 /// long as the process, so reopening from the tray is instant and we never
 /// have to spin up a second eframe event loop.
-fn hide_settings_window(ctx: &egui::Context) {
+fn hide_settings_window(ctx: &egui::Context, shared: &SharedSettings) {
     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     // The first time the settings window goes away, tell the user where
     // MouseTrails lives from now on.
-    if !settings::tray_hint_shown() {
-        settings::set_tray_hint_shown();
+    if !shared.tray_hint_shown() {
+        shared.set_tray_hint_shown();
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::{
                 MessageBoxW, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_TOPMOST,
@@ -146,11 +149,12 @@ fn hide_settings_window(ctx: &egui::Context) {
 }
 
 struct SettingsApp {
-    shared: Arc<settings::SharedSettings>,
+    shared: Arc<SharedSettings>,
     rx: Receiver<UiMsg>,
     startup: bool,
     startup_err: Option<String>,
-    saved: Settings,
+    saved: EffectSettings,
+    saved_app: AppConfig,
     updates: u64,
 }
 
@@ -185,11 +189,12 @@ impl eframe::App for SettingsApp {
             if std::env::var("MOUSETRAILS_DEBUG").is_ok() {
                 crate::overlay::debug_log("ui: close_requested intercepted".into());
             }
-            hide_settings_window(ctx);
+            hide_settings_window(ctx, &self.shared);
             return;
         }
 
-        let mut s = self.shared.settings.read().unwrap().clone();
+        let mut s = self.shared.effects.read().unwrap().clone();
+        let mut app = self.shared.app.read().unwrap().clone();
         let mut startup = self.startup;
         let startup_err: Option<String> = None;
         let mut toggle_startup: Option<bool> = None;
@@ -208,8 +213,9 @@ impl eframe::App for SettingsApp {
                         close = true;
                     }
                     if ui.button("Reset to defaults").clicked() {
-                        // Keep UI-state flags; reset everything else.
-                        s = Settings { tray_hint_shown: s.tray_hint_shown, ..Settings::default() };
+                        // App-level state (theme, FPS, hints) is untouched;
+                        // only the effect settings of this profile reset.
+                        s = EffectSettings::default();
                     }
                 });
             });
@@ -255,7 +261,7 @@ impl eframe::App for SettingsApp {
                 ui.group(|ui| {
                     ui.label(egui::RichText::new("Performance").strong());
                     ui.add(
-                        egui::Slider::new(&mut s.render_fps, 24..=120)
+                        egui::Slider::new(&mut app.render_fps, 24..=120)
                             .text("Render FPS")
                             .suffix(" fps"),
                     );
@@ -310,15 +316,23 @@ impl eframe::App for SettingsApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
+        // Any widget mutation lands in the shared state and on disk: effect
+        // settings go to the active theme's profile file, app knobs to the
+        // root config.
         if s != self.saved {
-            settings::Settings::save(&s);
-            *self.shared.settings.write().unwrap() = s.clone();
+            *self.shared.effects.write().unwrap() = s.clone();
+            self.shared.save_effects();
             self.saved = s;
+        }
+        if app != self.saved_app {
+            self.shared.store.save_app(&app);
+            *self.shared.app.write().unwrap() = app.clone();
+            self.saved_app = app;
         }
     }
 }
 
-fn trail_section(ui: &mut egui::Ui, s: &mut Settings) {
+fn trail_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.trail.enabled, "Mouse Trail");
@@ -402,7 +416,7 @@ fn palette_row(ui: &mut egui::Ui, palette: &mut Vec<[u8; 3]>) {
     });
 }
 
-fn bubbles_section(ui: &mut egui::Ui, s: &mut Settings) {
+fn bubbles_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.bubbles.enabled, "Bubbles");
@@ -456,7 +470,7 @@ fn bubbles_section(ui: &mut egui::Ui, s: &mut Settings) {
     });
 }
 
-fn sparkles_section(ui: &mut egui::Ui, s: &mut Settings) {
+fn sparkles_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.sparkles.enabled, "Sparkles");
@@ -522,7 +536,7 @@ fn sparkles_section(ui: &mut egui::Ui, s: &mut Settings) {
     });
 }
 
-fn ripples_section(ui: &mut egui::Ui, s: &mut Settings) {
+fn ripples_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
     ui.group(|ui| {
         ui.checkbox(&mut s.ripples.enabled, "Click ripples");
         ui.label(

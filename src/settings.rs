@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::sync::{Mutex, RwLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -180,87 +178,6 @@ impl Default for RippleCfg {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    pub trail: TrailCfg,
-    pub bubbles: BubbleCfg,
-    pub sparkles: SparkleCfg,
-    pub ripples: RippleCfg,
-    pub render_fps: u32,
-    /// Whether the "how to find me in the tray" hint was shown after the
-    /// user closed the settings window for the first time.
-    pub tray_hint_shown: bool,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            trail: TrailCfg::default(),
-            bubbles: BubbleCfg::default(),
-            sparkles: SparkleCfg::default(),
-            ripples: RippleCfg::default(),
-            render_fps: 60,
-            tray_hint_shown: false,
-        }
-    }
-}
-
-impl Settings {
-    pub fn load() -> Self {
-        let path = config_path();
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(s) = serde_json::from_str::<Settings>(&text) {
-                return s;
-            }
-        }
-        Settings::default()
-    }
-
-    pub fn save(&self) {
-        let path = config_path();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, json);
-        }
-    }
-}
-
-pub fn config_path() -> PathBuf {
-    std::env::var("APPDATA")
-        .map(|d| PathBuf::from(d).join("MouseTrails").join("config.json"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("MouseTrails-config.json"))
-}
-
-/// True when no config file exists yet (i.e. this is the first launch).
-pub fn config_exists() -> bool {
-    config_path().exists()
-}
-
-pub fn tray_hint_shown() -> bool {
-    Settings::load().tray_hint_shown
-}
-
-/// Mark the first-close tray hint as shown and persist it.
-pub fn set_tray_hint_shown() {
-    let mut s = Settings::load();
-    s.tray_hint_shown = true;
-    s.save();
-}
-
-/// State shared between the overlay thread (main) and the settings UI thread.
-pub struct SharedSettings {
-    pub settings: RwLock<Settings>,
-    /// Self-update status, written by the updater's check threads and read by
-    /// the tray menu and settings window.
-    pub update: Mutex<crate::updater::UpdateState>,
-    /// HWND of the overlay window (as isize), set once at creation. The
-    /// settings thread uses it to ask the overlay to exit during updates.
-    pub overlay_hwnd: std::sync::atomic::AtomicIsize,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,21 +192,5 @@ mod tests {
         let json = serde_json::to_string(&cfg).unwrap();
         let back: TrailCfg = serde_json::from_str(&json).unwrap();
         assert_eq!(back, cfg);
-    }
-
-    #[test]
-    fn legacy_config_without_new_fields_loads() {
-        // A config written before palettes existed must still load, with the
-        // new fields falling back to their defaults.
-        let legacy = r#"{
-            "trail": {"enabled": true, "style": "rainbow", "length_secs": 0.55,
-                      "width": 10.0, "hue_speed": 1.0, "color": [51, 217, 255]},
-            "bubbles": {}, "sparkles": {}, "ripples": {},
-            "render_fps": 60, "tray_hint_shown": false
-        }"#;
-        let s: Settings = serde_json::from_str(legacy).unwrap();
-        assert_eq!(s.trail.style, TrailStyle::Rainbow);
-        assert!(s.trail.palette.is_empty());
-        assert_eq!(s.trail.stripe_len, 14.0);
     }
 }

@@ -197,7 +197,7 @@ pub fn is_update_available(remote: &RemoteBuild) -> bool {
 
 /// Records a check result into the shared status. Returns whether an update
 /// is available.
-pub fn record_check(shared: &crate::settings::SharedSettings, remote: &RemoteBuild) -> bool {
+pub fn record_check(shared: &crate::store::SharedSettings, remote: &RemoteBuild) -> bool {
     let available = is_update_available(remote);
     let mut st = shared.update.lock().unwrap();
     if available {
@@ -294,7 +294,7 @@ pub fn apply_and_restart() -> Result<(), String> {
 
 /// Spawns a quiet check thread (used by the settings window): records the
 /// result into the shared status without any dialog.
-pub fn spawn_check(shared: std::sync::Arc<crate::settings::SharedSettings>) {
+pub fn spawn_check(shared: std::sync::Arc<crate::store::SharedSettings>) {
     std::thread::Builder::new()
         .name("update-check".into())
         .spawn(move || match check_remote() {
@@ -310,7 +310,7 @@ pub fn spawn_check(shared: std::sync::Arc<crate::settings::SharedSettings>) {
 
 /// Spawns the install worker: download, verify, stage, swap, and ask the
 /// overlay to exit — the detached helper starts the new exe ~1s later.
-pub fn spawn_install(shared: std::sync::Arc<crate::settings::SharedSettings>) {
+pub fn spawn_install(shared: std::sync::Arc<crate::store::SharedSettings>) {
     std::thread::Builder::new()
         .name("update-install".into())
         .spawn(move || {

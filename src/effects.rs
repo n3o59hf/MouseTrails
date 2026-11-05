@@ -4,7 +4,8 @@ use tiny_skia::{
     RadialGradient, Shader, SpreadMode, Stroke, Transform,
 };
 
-use crate::settings::{BubbleShape, Settings, SparkShape, TrailStyle};
+use crate::settings::{BubbleShape, SparkShape, TrailStyle};
+use crate::store::EffectSettings;
 
 pub struct Ctx<'a> {
     pub dt: f32,
@@ -13,14 +14,14 @@ pub struct Ctx<'a> {
     pub vel: (f32, f32),
     pub clicked: bool,
     pub moving: f32,
-    pub cfg: &'a Settings,
+    pub cfg: &'a EffectSettings,
     pub screen: (f32, f32),
 }
 
 pub trait Effect {
     fn update(&mut self, ctx: &Ctx);
-    fn render(&mut self, pm: &mut PixmapMut, cfg: &Settings, now: f32);
-    fn bounds(&self, cfg: &Settings) -> Option<RectF>;
+    fn render(&mut self, pm: &mut PixmapMut, cfg: &EffectSettings, now: f32);
+    fn bounds(&self, cfg: &EffectSettings) -> Option<RectF>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -371,7 +372,7 @@ impl Effect for Trail {
         }
     }
 
-    fn render(&mut self, pm: &mut PixmapMut, cfg: &Settings, now: f32) {
+    fn render(&mut self, pm: &mut PixmapMut, cfg: &EffectSettings, now: f32) {
         let c = &cfg.trail;
         if !c.enabled || self.pts.len() < 2 {
             return;
@@ -609,7 +610,7 @@ impl Effect for Trail {
         }
     }
 
-    fn bounds(&self, cfg: &Settings) -> Option<RectF> {
+    fn bounds(&self, cfg: &EffectSettings) -> Option<RectF> {
         let c = &cfg.trail;
         if !c.enabled || self.pts.is_empty() {
             return None;
@@ -814,7 +815,7 @@ impl Effect for Bubbles {
         }
     }
 
-    fn render(&mut self, pm: &mut PixmapMut, cfg: &Settings, now: f32) {
+    fn render(&mut self, pm: &mut PixmapMut, cfg: &EffectSettings, now: f32) {
         let c = &cfg.bubbles;
         if !c.enabled {
             return;
@@ -832,7 +833,7 @@ impl Effect for Bubbles {
         }
     }
 
-    fn bounds(&self, cfg: &Settings) -> Option<RectF> {
+    fn bounds(&self, cfg: &EffectSettings) -> Option<RectF> {
         let c = &cfg.bubbles;
         if !c.enabled || self.list.is_empty() {
             return None;
@@ -1180,7 +1181,7 @@ impl Effect for Sparkles {
         }
     }
 
-    fn render(&mut self, pm: &mut PixmapMut, cfg: &Settings, now: f32) {
+    fn render(&mut self, pm: &mut PixmapMut, cfg: &EffectSettings, now: f32) {
         let c = &cfg.sparkles;
         if !c.enabled {
             return;
@@ -1246,7 +1247,7 @@ impl Effect for Sparkles {
         }
     }
 
-    fn bounds(&self, cfg: &Settings) -> Option<RectF> {
+    fn bounds(&self, cfg: &EffectSettings) -> Option<RectF> {
         let c = &cfg.sparkles;
         if !c.enabled || self.list.is_empty() {
             return None;
@@ -1311,7 +1312,7 @@ impl Effect for Ripples {
         self.list.retain(|r| ctx.now - r.born < total);
     }
 
-    fn render(&mut self, pm: &mut PixmapMut, cfg: &Settings, now: f32) {
+    fn render(&mut self, pm: &mut PixmapMut, cfg: &EffectSettings, now: f32) {
         let c = &cfg.ripples;
         if !c.enabled {
             return;
@@ -1331,7 +1332,7 @@ impl Effect for Ripples {
         }
     }
 
-    fn bounds(&self, cfg: &Settings) -> Option<RectF> {
+    fn bounds(&self, cfg: &EffectSettings) -> Option<RectF> {
         let c = &cfg.ripples;
         if !c.enabled || self.list.is_empty() {
             return None;
@@ -1387,14 +1388,14 @@ impl Effects {
         self.ripples.update(ctx);
     }
 
-    pub fn render(&mut self, pm: &mut PixmapMut, cfg: &Settings, now: f32) {
+    pub fn render(&mut self, pm: &mut PixmapMut, cfg: &EffectSettings, now: f32) {
         self.trail.render(pm, cfg, now);
         self.bubbles.render(pm, cfg, now);
         self.sparkles.render(pm, cfg, now);
         self.ripples.render(pm, cfg, now);
     }
 
-    pub fn bounds(&self, cfg: &Settings) -> Option<RectF> {
+    pub fn bounds(&self, cfg: &EffectSettings) -> Option<RectF> {
         RectF::union(
             RectF::union(self.trail.bounds(cfg), self.bubbles.bounds(cfg)),
             RectF::union(self.sparkles.bounds(cfg), self.ripples.bounds(cfg)),
@@ -1479,9 +1480,9 @@ mod tests {
         }
     }
 
-    fn test_settings() -> &'static Settings {
+    fn test_settings() -> &'static EffectSettings {
         // Defaults are small consts; a leaked static keeps the borrow simple.
-        Box::leak(Box::new(Settings::default()))
+        Box::leak(Box::new(EffectSettings::default()))
     }
 
     #[test]
@@ -1651,10 +1652,10 @@ mod tests {
     #[test]
     fn soft_and_striped_trails_render_pixels() {
         for style in [TrailStyle::Soft, TrailStyle::Striped] {
-            let mut settings = Settings::default();
+            let mut settings = EffectSettings::default();
             settings.trail.style = style;
             settings.trail.length_secs = 1.0;
-            let cfg: &'static Settings = Box::leak(Box::new(settings));
+            let cfg: &'static EffectSettings = Box::leak(Box::new(settings));
 
             let mut t = Trail::default();
             t.push_samples(vec![(10.0, 50.0, 0.0), (30.0, 50.0, 0.02), (60.0, 50.0, 0.04)]);
@@ -1679,7 +1680,7 @@ mod tests {
     #[test]
     fn snowflake_spawns_rotating_with_little_momentum() {
         let settings = bubble_settings(BubbleShape::Snowflake, 0.05, 3.5, 0.5);
-        let cfg: &'static Settings = Box::leak(Box::new(settings));
+        let cfg: &'static EffectSettings = Box::leak(Box::new(settings));
         let mut b = Bubbles::default();
         for frame in 0..30 {
             b.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (1000.0, 0.0), 30.0, false, cfg));
@@ -1704,7 +1705,7 @@ mod tests {
     fn ornaments_pick_up_spin_and_damp_faster_than_bubbles() {
         // Fast movement should kick ornaments into a spin.
         let orn = bubble_settings(BubbleShape::Ornament, 0.35, 6.0, 1.0);
-        let orn_cfg: &'static Settings = Box::leak(Box::new(orn));
+        let orn_cfg: &'static EffectSettings = Box::leak(Box::new(orn));
         let mut o = Bubbles::default();
         for frame in 0..12 {
             o.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (2000.0, 0.0), 30.0, false, orn_cfg));
@@ -1720,8 +1721,8 @@ mod tests {
         // with the cursor far away so no fresh spawns or collisions muddy the
         // comparison.
         let classic =
-            Settings { bubbles: BubbleCfg { drag: 2.2, ..orn_cfg.bubbles.clone() }, ..orn_cfg.clone() };
-        let classic_cfg: &'static Settings = Box::leak(Box::new(classic));
+            EffectSettings { bubbles: BubbleCfg { drag: 2.2, ..orn_cfg.bubbles.clone() }, ..orn_cfg.clone() };
+        let classic_cfg: &'static EffectSettings = Box::leak(Box::new(classic));
         let mut o = Bubbles::default();
         let mut c = Bubbles::default();
         let mut ob = bubble(5000.0, 5000.0);
@@ -1744,7 +1745,7 @@ mod tests {
     fn bubble_palette_resolves_per_particle() {
         let mut settings = bubble_settings(BubbleShape::Bubble, 0.35, 2.2, 0.0);
         settings.bubbles.palette = vec![[255, 0, 0], [0, 0, 255]];
-        let cfg: &'static Settings = Box::leak(Box::new(settings));
+        let cfg: &'static EffectSettings = Box::leak(Box::new(settings));
         let mut b = Bubbles::default();
         for frame in 0..40 {
             b.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (600.0, 0.0), 30.0, false, cfg));
@@ -1760,10 +1761,10 @@ mod tests {
         assert!(reds > 0 && reds < b.list.len(), "palette should cycle, reds={} of {}", reds, b.list.len());
     }
 
-    /// A Settings with the bubbles section set for a given shape, everything
+    /// An EffectSettings with the bubbles section set for a given shape, everything
     /// else at defaults.
-    fn bubble_settings(shape: BubbleShape, momentum: f32, drag: f32, spin: f32) -> Settings {
-        let mut s = Settings::default();
+    fn bubble_settings(shape: BubbleShape, momentum: f32, drag: f32, spin: f32) -> EffectSettings {
+        let mut s = EffectSettings::default();
         s.bubbles.shape = shape;
         s.bubbles.momentum = momentum;
         s.bubbles.drag = drag;
@@ -1774,12 +1775,12 @@ mod tests {
 
     #[test]
     fn spark_generations_are_capped() {
-        let mut s = Settings::default();
+        let mut s = EffectSettings::default();
         s.sparkles.rate = 40.0;
         s.sparkles.child_rate = 60.0;
         s.sparkles.max_generations = 3;
         s.sparkles.lifetime = 1.0;
-        let cfg: &'static Settings = Box::leak(Box::new(s));
+        let cfg: &'static EffectSettings = Box::leak(Box::new(s));
 
         let mut sp = Sparkles::default();
         for frame in 0..150 {
@@ -1811,12 +1812,12 @@ mod tests {
 
     #[test]
     fn spark_palette_cycles_and_children_inherit_color() {
-        let mut s = Settings::default();
+        let mut s = EffectSettings::default();
         s.sparkles.rate = 40.0;
         s.sparkles.child_rate = 60.0;
         s.sparkles.max_generations = 2;
         s.sparkles.palette = vec![[255, 0, 0], [0, 255, 0]];
-        let cfg: &'static Settings = Box::leak(Box::new(s));
+        let cfg: &'static EffectSettings = Box::leak(Box::new(s));
 
         let mut sp = Sparkles::default();
         for frame in 0..90 {
@@ -1838,9 +1839,9 @@ mod tests {
 
     #[test]
     fn streak_extends_bounds() {
-        let mut s = Settings::default();
+        let mut s = EffectSettings::default();
         s.sparkles.streak_secs = 0.5;
-        let cfg: &'static Settings = Box::leak(Box::new(s));
+        let cfg: &'static EffectSettings = Box::leak(Box::new(s));
         let mut sp = Sparkles::default();
         let mut spark = Spark {
             x: 500.0,
@@ -1872,7 +1873,7 @@ mod tests {
         vel: (f32, f32),
         moving: f32,
         clicked: bool,
-        cfg: &'static Settings,
+        cfg: &'static EffectSettings,
     ) -> Ctx<'static> {
         Ctx {
             dt: 1.0 / 60.0,
