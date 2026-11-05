@@ -115,4 +115,21 @@ impl ThemePreview {
     pub fn image(&self) -> Option<&egui::ColorImage> {
         self.image.as_ref()
     }
+
+    /// Current render size in pixels.
+    pub fn pixel_size(&self) -> (f32, f32) {
+        (self.pixmap.width() as f32, self.pixmap.height() as f32)
+    }
+
+    /// Re-render at a new size. The simulation state is kept (the animation
+    /// continues seamlessly); particles outside the new bounds cull
+    /// naturally. A no-op when the size already matches.
+    pub fn resize(&mut self, w: u32, h: u32) {
+        if self.pixmap.width() == w && self.pixmap.height() == h {
+            return;
+        }
+        self.pixmap = tiny_skia::Pixmap::new(w, h).expect("preview pixmap");
+        self.mouse = (w as f32 * 0.5, h as f32 * 0.5);
+        self.vel = (0.0, 0.0);
+    }
 }

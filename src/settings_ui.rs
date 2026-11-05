@@ -101,6 +101,7 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         cards_dirty: false,
         active_def,
         theme_err: None,
+        preview_cell_w: 190.0,
         dialog_open: false,
         dialog_name: String::new(),
         dialog_source: None,
@@ -181,6 +182,9 @@ struct SettingsApp {
     active_def: Option<ThemeDef>,
     /// Error from the last profile/preset action, shown until it clears.
     theme_err: Option<String>,
+    /// Measured gallery cell width — previews re-render at exactly this
+    /// size (updated by the widget pass, applied by the next step loop).
+    preview_cell_w: f32,
     /// The create-profile dialog state.
     dialog_open: bool,
     dialog_name: String,
@@ -217,10 +221,15 @@ struct PreviewCard {
     played: u32,
 }
 
-const PREVIEW_W: u32 = 264;
-const PREVIEW_H: u32 = 148;
-/// Fixed column count for the profile gallery.
-const GALLERY_COLS: usize = 3;
+/// Preview tile aspect (height / width) — sims re-render at whatever pixel
+/// size the layout gives them, keeping this ratio.
+const PREVIEW_ASPECT: f32 = 74.0 / 132.0;
+/// Smallest allowed gallery tile width; the column count adapts to it so
+/// the grid never overflows the window.
+const MIN_TILE_W: f32 = 160.0;
+const TILE_SPACING: f32 = 10.0;
+/// Column count of the create dialog's source grid.
+const DIALOG_COLS: usize = 3;
 /// ~3.7 sim-seconds at the fixed 30 fps step: trail fully grown, particles
 /// mid-life, first click blast happened — a lively freeze frame.
 const PREVIEW_FRAMES: u32 = 110;
@@ -264,7 +273,7 @@ fn build_cards(shared: &SharedSettings) -> (Vec<PreviewCard>, Option<ThemeDef>) 
                 theme: theme.clone(),
                 profile,
                 label,
-                sim: ThemePreview::new(PREVIEW_W, PREVIEW_H),
+                sim: ThemePreview::new(182, 102),
                 exprs: FrameExprs::build(&es),
                 texture: None,
                 played: 0,
@@ -457,6 +466,7 @@ impl eframe::App for SettingsApp {
             cards_dirty,
             active_def,
             theme_err,
+            preview_cell_w,
             dialog_open,
             dialog_name,
             dialog_source,
@@ -498,7 +508,10 @@ impl eframe::App for SettingsApp {
             }
         }
         if visible {
+            let want_w = ((*preview_cell_w - 8.0).round() as u32).max(96);
+            let want_h = (want_w as f32 * PREVIEW_ASPECT).round() as u32;
             for card in cards.iter_mut() {
+                card.sim.resize(want_w, want_h);
                 if card.played >= PREVIEW_FRAMES {
                     continue; // frozen
                 }
@@ -593,6 +606,7 @@ impl eframe::App for SettingsApp {
             egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
                 profiles_group(
                     ui,
+                    preview_cell_w,
                     &app,
                     cards,
                     theme_err,
@@ -667,7 +681,6 @@ impl eframe::App for SettingsApp {
                             color: egui::Color32::from_black_alpha(96),
                         })
                         .show(ui, |ui| {
-                            ui.set_width(560.0);
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new("New profile").strong());
                                 ui.with_layout(
@@ -686,6 +699,7 @@ impl eframe::App for SettingsApp {
                                 &app,
                                 cards,
                                 theme_err,
+                                *preview_cell_w,
                                 dialog_name,
                                 dialog_source,
                                 dialog_preset_mode,
@@ -750,6 +764,7 @@ impl eframe::App for SettingsApp {
 #[allow(clippy::too_many_arguments)]
 fn profiles_group(
     ui: &mut egui::Ui,
+    preview_cell_w: &mut f32,
     app: &AppConfig,
     cards: &[PreviewCard],
     theme_err: &mut Option<String>,
@@ -766,15 +781,19 @@ fn profiles_group(
             });
         });
 
-        // Gallery: fixed-count grid of profile tiles plus the "+" tile.
-        // Tiles stretch to fill the row: each cell gets an equal share of
-        // the group width.
-        let cell_w = ((ui.available_width() - 10.0 * (GALLERY_COLS as f32 - 1.0) - 12.0)
-            / GALLERY_COLS as f32)
-            .max(150.0);
+        // Gallery: the column count adapts to the available width with a
+        // minimum tile size, so the grid always fits — narrow windows get
+        // fewer columns instead of overflowing. Tiles stretch to fill the
+        // row and previews re-render at exactly the tile size.
+        let avail = ui.available_width() - 12.0;
+        let cols = ((avail + TILE_SPACING) / (MIN_TILE_W + TILE_SPACING))
+            .floor()
+            .max(1.0) as usize;
+        let cell_w = (avail - TILE_SPACING * (cols as f32 - 1.0)) / cols as f32;
+        *preview_cell_w = cell_w;
         egui::Grid::new("profile_gallery")
-            .spacing([10.0, 10.0])
-            .num_columns(GALLERY_COLS)
+            .spacing([TILE_SPACING, TILE_SPACING])
+            .num_columns(cols)
             .show(ui, |ui| {
                 // egui's Grid does not auto-wrap at num_columns — rows must
                 // be ended explicitly.
@@ -790,7 +809,7 @@ fn profiles_group(
                         ));
                     }
                     placed += 1;
-                    if placed % GALLERY_COLS == 0 {
+                    if placed % cols == 0 {
                         ui.end_row();
                     }
                 }
@@ -799,7 +818,7 @@ fn profiles_group(
                     *dialog_open = true;
                 }
                 placed += 1;
-                if placed % GALLERY_COLS != 0 {
+                if placed % cols != 0 {
                     ui.end_row();
                 }
             });
@@ -828,10 +847,8 @@ fn gallery_card(
     selected: bool,
     cell_w: f32,
 ) -> egui::Response {
-    let img_w = cell_w - 8.0;
-    let img_h = img_w * PREVIEW_H as f32 / PREVIEW_W as f32;
-    let fill =
-        if selected { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color };
+    let (img_w, img_h) = card.sim.pixel_size();
+    let fill = if selected { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color };
     let stroke = if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
     let (name_color, tag_color) = if selected {
         (egui::Color32::WHITE, egui::Color32::from_gray(215))
@@ -869,7 +886,7 @@ fn gallery_card(
 
 /// The "+" tile that opens the create-profile dialog.
 fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
-    let img_h = (cell_w - 8.0) * PREVIEW_H as f32 / PREVIEW_W as f32;
+    let img_h = (cell_w - 8.0) * PREVIEW_ASPECT;
     let inner = egui::Frame::none()
         .fill(ui.visuals().faint_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -902,6 +919,7 @@ fn dialog_body(
     app: &AppConfig,
     cards: &[PreviewCard],
     theme_err: &mut Option<String>,
+    tile_w: f32,
     name: &mut String,
     source: &mut Option<DialogSource>,
     preset_mode: &mut bool,
@@ -945,8 +963,10 @@ fn dialog_body(
                 tex: Option<&egui::TextureHandle>,
                 tile_w: f32|
      -> egui::Response {
-        let img_w = tile_w - 8.0;
-        let img_h = img_w * PREVIEW_H as f32 / PREVIEW_W as f32;
+        let (img_w, img_h) = match tex {
+            Some(_) => (tile_w, tile_w * PREVIEW_ASPECT),
+            None => (tile_w - 8.0, (tile_w - 8.0) * PREVIEW_ASPECT),
+        };
         let fill = if selected {
             ui.visuals().selection.bg_fill
         } else {
@@ -960,7 +980,7 @@ fn dialog_body(
             .rounding(6.0)
             .inner_margin(6.0)
             .show(ui, |ui| {
-                ui.set_min_width(tile_w);
+                ui.set_min_width(tile_w + 8.0);
                 ui.vertical(|ui| {
                     if let Some(tex) = tex {
                         ui.add(egui::Image::new((tex.id(), egui::vec2(img_w, img_h))));
@@ -979,13 +999,13 @@ fn dialog_body(
         )
     };
 
-    let tile_w = ((ui.available_width() - 10.0 * (GALLERY_COLS as f32 - 1.0))
-        / GALLERY_COLS as f32)
-        .max(120.0);
+    // Source tiles show previews at their native pixel size — the same
+    // textures the gallery uses — so nothing is scaled.
+    // (tile_w arrives as a parameter.)
     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
         egui::Grid::new("source_grid")
-            .spacing([10.0, 10.0])
-            .num_columns(GALLERY_COLS)
+            .spacing([TILE_SPACING, TILE_SPACING])
+            .num_columns(DIALOG_COLS)
             .show(ui, |ui| {
                 let mut placed = 0;
                 for (src, title, sub, card) in &sources {
@@ -1002,7 +1022,7 @@ fn dialog_body(
                         *source = Some(src.clone());
                     }
                     placed += 1;
-                    if placed % GALLERY_COLS == 0 {
+                    if placed % DIALOG_COLS == 0 {
                         ui.end_row();
                     }
                 }
@@ -1012,7 +1032,7 @@ fn dialog_body(
                     *preset_mode = !*preset_mode;
                 }
                 placed += 1;
-                if placed % GALLERY_COLS != 0 {
+                if placed % DIALOG_COLS != 0 {
                     ui.end_row();
                 }
             });
