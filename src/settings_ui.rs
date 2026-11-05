@@ -255,21 +255,6 @@ fn active_profile_in(app: &AppConfig, theme: &str) -> String {
     app.profiles.get(theme).cloned().unwrap_or_else(|| store::DEFAULT_PROFILE.into())
 }
 
-/// Lowercase slug safe for use as a file name.
-fn safe_name(s: &str) -> Option<String> {
-    let t: String = s
-        .trim()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
-        .collect();
-    let t = t.trim_matches('-').to_string();
-    if t.is_empty() {
-        None
-    } else {
-        Some(t)
-    }
-}
-
 /// Deferred theme/profile mutations, applied after the widget pass so the
 /// snapshots can be refreshed before the write-back diff runs.
 #[derive(Debug)]
@@ -318,8 +303,9 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
         }
         Action::NewProfile(name) => {
             let theme = shared.app.read().unwrap().theme.clone();
-            let id = safe_name(&name).ok_or_else(|| "Profile name is empty.".to_string())?;
-            if shared.store.list_profiles(&theme).contains(&id) {
+            let id = store::sanitize_id(&name)
+                .ok_or_else(|| "Profile name is empty or reserved.".to_string())?;
+            if shared.store.profile_exists(&theme, &id) {
                 return Err(format!("A profile named \u{201C}{}\u{201D} already exists.", id));
             }
             let current = shared.effects.read().unwrap().clone();
@@ -357,8 +343,9 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
         }
         Action::CreateCustom(name) => {
             let display = name.trim().to_string();
-            let id = safe_name(&name).ok_or_else(|| "Theme name is empty.".to_string())?;
-            if themes::builtin(&id).is_some() || shared.store.list_themes().contains(&id) {
+            let id = store::sanitize_id(&name)
+                .ok_or_else(|| "Theme name is empty or reserved.".to_string())?;
+            if themes::builtin(&id).is_some() || shared.store.theme_exists(&id) {
                 return Err(format!("A theme named \u{201C}{}\u{201D} already exists.", id));
             }
             // The custom theme starts as a copy of the current theme's

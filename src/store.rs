@@ -125,6 +125,38 @@ pub fn config_dir() -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("MouseTrails"))
 }
 
+/// Windows reserved device names — unusable as file or folder names.
+const RESERVED_IDS: [&str; 22] = [
+    "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Maximum length of a profile or theme id (used as a file stem).
+pub const MAX_ID_LEN: usize = 40;
+
+/// Turn a user-typed name into a safe file-stem id: lowercased, safe
+/// characters only, trimmed, length-capped. Returns `None` when nothing
+/// usable remains or the id is reserved — Windows device names, or
+/// `theme`, which would collide with a theme's `theme.json` definition
+/// file. Non-alphanumeric characters (including path separators and dots)
+/// become `-`, so the result can never traverse paths.
+pub fn sanitize_id(name: &str) -> Option<String> {
+    let mut t: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    t = t.trim_matches('-').to_string();
+    if t.len() > MAX_ID_LEN {
+        t = t[..MAX_ID_LEN].trim_matches('-').to_string();
+    }
+    if t.is_empty() || t == "theme" || RESERVED_IDS.contains(&t.as_str()) {
+        return None;
+    }
+    Some(t)
+}
+
 /// True when any root config exists yet (first-launch detection).
 pub fn config_exists() -> bool {
     config_dir().join("config.json").exists()
@@ -258,6 +290,17 @@ impl Store {
     /// theme definition file is not a profile.
     pub fn list_profiles(&self, theme: &str) -> Vec<String> {
         list_stems(&self.theme_dir(theme), "theme.json")
+    }
+
+    /// Case-insensitive profile existence — NTFS compares case-insensitively
+    /// by default, so "Cozy" on disk must block creating "cozy".
+    pub fn profile_exists(&self, theme: &str, id: &str) -> bool {
+        self.list_profiles(theme).iter().any(|p| p.eq_ignore_ascii_case(id))
+    }
+
+    /// Case-insensitive custom-theme-folder existence.
+    pub fn theme_exists(&self, id: &str) -> bool {
+        self.list_themes().iter().any(|t| t.eq_ignore_ascii_case(id))
     }
 
     /// Delete a profile file. Returns whether something was removed. The
@@ -530,5 +573,42 @@ mod tests {
         es.trail.width = NumOrExpr::Num(99.0);
         store.ensure_profile("default", "default", &es);
         assert_eq!(store.load_profile("default", "default").unwrap().trail.width, NumOrExpr::Num(1.0));
+    }
+
+    #[test]
+    fn sanitize_id_blocks_reserved_and_unsafe_names() {
+        assert_eq!(sanitize_id("  Cozy! "), Some("cozy".to_string()));
+        assert_eq!(sanitize_id("My Theme v2"), Some("my-theme-v2".to_string()));
+        // Path traversal is impossible: every non-alnum becomes '-', and the
+        // leading run is trimmed — "../../config" is just "config".
+        assert_eq!(sanitize_id("../../config"), Some("config".to_string()));
+        // Empty after cleaning.
+        assert_eq!(sanitize_id(" ... "), None);
+        assert_eq!(sanitize_id("   "), None);
+        // The theme-definition file name is reserved for profiles/themes.
+        assert_eq!(sanitize_id("theme"), None);
+        assert_eq!(sanitize_id("THEME"), None);
+        // Windows reserved device names.
+        for reserved in ["con", "NUL", "Com1", "lpt9", "aux", "prn"] {
+            assert_eq!(sanitize_id(reserved), None, "{reserved} must be rejected");
+        }
+        // Length cap.
+        let long = "a".repeat(80);
+        assert_eq!(sanitize_id(&long).unwrap().len(), MAX_ID_LEN);
+    }
+
+    #[test]
+    fn existence_checks_are_case_insensitive() {
+        let (store, _dir) = temp_store("case");
+        store.save_profile("default", "Cozy", &EffectSettings::default());
+        assert!(store.profile_exists("default", "cozy"), "NTFS is case-insensitive");
+        assert!(store.profile_exists("default", "COZY"));
+        assert!(!store.profile_exists("default", "snug"));
+
+        let mut def = ThemeDef::default();
+        def.name = "Frost".into();
+        store.save_theme_def("Frost", &def);
+        assert!(store.theme_exists("frost"));
+        assert!(!store.theme_exists("winter"));
     }
 }
