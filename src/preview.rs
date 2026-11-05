@@ -124,12 +124,15 @@ impl ThemePreview {
     /// Re-render at a new size. The simulation state is kept (the animation
     /// continues seamlessly); particles outside the new bounds cull
     /// naturally. A no-op when the size already matches.
-    pub fn resize(&mut self, w: u32, h: u32) {
+    pub fn resize(&mut self, w: u32, h: u32) -> bool {
         if self.pixmap.width() == w && self.pixmap.height() == h {
-            return;
+            return false;
         }
         self.pixmap = tiny_skia::Pixmap::new(w, h).expect("preview pixmap");
         self.mouse = (w as f32 * 0.5, h as f32 * 0.5);
         self.vel = (0.0, 0.0);
+        // The old texture has the wrong dimensions; the caller replays the
+        // animation so the next step fills the new size.
+        true
     }
 }

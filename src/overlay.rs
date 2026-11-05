@@ -383,6 +383,23 @@ fn check_and_prompt(shared: Arc<SharedSettings>) {
     }
 }
 
+/// Current refresh rate (Hz) of the primary monitor, 0 when unknown.
+/// EnumDisplaySettingsW with ENUM_CURRENT_SETTINGS reports the mode the
+/// monitor is actually running at right now, so a 144 Hz screen reports
+/// 144 even when the desktop was set to 60 a second ago.
+fn query_monitor_hz() -> u32 {
+    unsafe {
+        let mut dm = DEVMODEW::default();
+        dm.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+        if EnumDisplaySettingsW(w!("DISPLAY"), ENUM_CURRENT_SETTINGS, &mut dm).as_bool()
+            && dm.dmDisplayFrequency >= 23
+        {
+            return dm.dmDisplayFrequency;
+        }
+    }
+    0
+}
+
 struct App {
     shared: Arc<SharedSettings>,
     ui: SettingsUiManager,
@@ -407,6 +424,10 @@ struct App {
     clock: f32,
     timer_period: u32,
     metric_checks: u32,
+    /// Current refresh rate of the primary monitor (Hz), 0 when unknown.
+    /// The render FPS setting is clamped to this at runtime — the setting
+    /// itself is kept, so a 120 fps config survives a 60 Hz screen.
+    monitor_hz: u32,
     last_topmost_assert: Instant,
 
     mouse: (f32, f32),
@@ -444,6 +465,7 @@ impl App {
             clock: 0.0,
             timer_period: 15,
             metric_checks: 0,
+            monitor_hz: 0,
             last_topmost_assert: Instant::now(),
             mouse: (0.0, 0.0),
             vel: (0.0, 0.0),
@@ -657,7 +679,16 @@ impl App {
         let raw = self.shared.effects.read().unwrap().clone();
         let render_fps = self.shared.app.read().unwrap().render_fps;
 
-        let want = ((1000.0 / render_fps.clamp(24, 240) as f32) as u32).max(8);
+        // Clamp to what the monitor can actually show. The setting is kept
+        // untouched: 120 fps on a screen that dropped to 60 Hz renders at
+        // 60 until the screen (or the setting) changes back.
+        let effective_fps = if self.monitor_hz >= 23 {
+            render_fps.min(self.monitor_hz)
+        } else {
+            render_fps
+        };
+
+        let want = ((1000.0 / effective_fps.clamp(24, 240) as f32) as u32).max(8);
         if want != self.timer_period {
             self.timer_period = want;
             unsafe {
@@ -671,6 +702,7 @@ impl App {
         if self.metric_checks >= 180 {
             self.metric_checks = 0;
             self.on_display_change();
+            self.monitor_hz = query_monitor_hz();
         }
 
         // Windows sometimes demotes the overlay's z-position below ordinary

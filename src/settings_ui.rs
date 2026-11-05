@@ -101,6 +101,7 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         cards_dirty: false,
         active_def,
         theme_err: None,
+        delete_arm: None,
         preview_cell_w: 190.0,
         dialog_open: false,
         dialog_name: String::new(),
@@ -182,6 +183,9 @@ struct SettingsApp {
     active_def: Option<ThemeDef>,
     /// Error from the last profile/preset action, shown until it clears.
     theme_err: Option<String>,
+    /// Armed delete-profile button: first click arms, second (within 4s)
+    /// confirms.
+    delete_arm: Option<std::time::Instant>,
     /// Measured gallery cell width — previews re-render at exactly this
     /// size (updated by the widget pass, applied by the next step loop).
     preview_cell_w: f32,
@@ -317,17 +321,31 @@ fn load_or_materialize(shared: &SharedSettings, theme: &str, profile: &str) -> E
     es
 }
 
-fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String> {
+fn perform_action(
+    shared: &SharedSettings,
+    action: Action,
+) -> Result<Vec<(String, String)>, String> {
+    // Profiles whose preview cards need their settings re-read after the
+    // action (a switch refreshes the old and the new active card without
+    // rebuilding every card).
+    fn ok(refresh: Vec<(String, String)>) -> Result<Vec<(String, String)>, String> {
+        Ok(refresh)
+    }
     match action {
         Action::SwitchProfile(theme, profile) => {
+            let previous = {
+                let app = shared.app.read().unwrap();
+                active_profile_in(&app, &app.theme)
+            };
+            let previous_theme = shared.app.read().unwrap().theme.clone();
             let es = load_or_materialize(shared, &theme, &profile);
             *shared.effects.write().unwrap() = es;
             let mut app = shared.app.write().unwrap();
             app.theme = theme.clone();
-            app.profiles.insert(theme, profile);
+            app.profiles.insert(theme.clone(), profile.clone());
             let snapshot = app.clone();
             shared.store.save_app(&snapshot);
-            Ok(())
+            ok(vec![(previous_theme, previous), (theme, profile)])
         }
         Action::NewProfile(base, name) => {
             if themes::builtin(&base).is_none() && !shared.store.theme_exists(&base) {
@@ -345,6 +363,7 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
             let es = themes::apply_def(&def, &current);
             shared.store.save_profile(&base, &id, &es);
             perform_action(shared, Action::SwitchProfile(base, id))
+            .map(|_| Vec::new())
         }
         Action::DeleteProfile(theme, profile) => {
             // If it's the active one, move to another profile of the same
@@ -373,7 +392,7 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
             if !shared.store.delete_profile(&theme, &profile) {
                 return Err(format!("Could not delete profile \u{201C}{}\u{201D}.", profile));
             }
-            Ok(())
+            ok(Vec::new())
         }
         Action::DuplicateProfile(src_theme, src_profile, name) => {
             let id = store::sanitize_id(&name)
@@ -409,7 +428,7 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
             if switch {
                 perform_action(shared, Action::SwitchProfile(id, store::DEFAULT_PROFILE.into()))?;
             }
-            Ok(())
+            ok(Vec::new())
         }
         Action::OpenFolder => {
             let dir = shared.store.base().join("themes");
@@ -418,7 +437,7 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
                 .arg(&dir)
                 .spawn()
                 .map_err(|e| format!("Could not open the folder: {}", e))?;
-            Ok(())
+            ok(Vec::new())
         }
     }
 }
@@ -466,6 +485,7 @@ impl eframe::App for SettingsApp {
             active_def,
             theme_err,
             preview_cell_w,
+            delete_arm,
             dialog_open,
             dialog_name,
             dialog_source,
@@ -493,24 +513,15 @@ impl eframe::App for SettingsApp {
             *active_def = d;
             *cards_dirty = false;
         }
-        // Live-follow: re-resolve the active card and replay its animation
-        // whenever tweaks land.
-        if s != *saved {
-            let active = active_profile_in(&app, &app.theme);
-            if let Some(card) = cards
-                .iter_mut()
-                .find(|c| c.theme == app.theme && c.profile == active)
-            {
-                card.exprs = FrameExprs::build(&s);
-                card.sim.reset();
-                card.played = 0;
-            }
-        }
         if visible {
             let want_w = ((*preview_cell_w - 12.0).round() as u32).max(96);
             let want_h = (want_w as f32 * PREVIEW_ASPECT).round() as u32;
             for card in cards.iter_mut() {
-                card.sim.resize(want_w, want_h);
+                // A size change invalidates the old texture — replay at the
+                // new size.
+                if card.sim.resize(want_w, want_h) {
+                    card.played = 0;
+                }
                 if card.played >= PREVIEW_FRAMES {
                     continue; // frozen
                 }
@@ -606,6 +617,7 @@ impl eframe::App for SettingsApp {
                 profiles_group(
                     ui,
                     preview_cell_w,
+                    delete_arm,
                     &app,
                     cards,
                     theme_err,
@@ -624,7 +636,7 @@ impl eframe::App for SettingsApp {
                 ui.group(|ui| {
                     ui.label(egui::RichText::new("Performance").strong());
                     ui.add(
-                        egui::Slider::new(&mut fps, 24..=120).text("Render FPS").suffix(" fps"),
+                        egui::Slider::new(&mut fps, 24..=240).text("Render FPS").suffix(" fps"),
                     );
                 });
                 ui.add_space(6.0);
@@ -658,61 +670,44 @@ impl eframe::App for SettingsApp {
             });
         });
 
-        // The create-profile popup floats above the settings window, built
-        // from an Area + Frame so it shares the main window's styling (an
-        // egui::Window renders its own title style and frame). The body
-        // asks for closure by return value.
+        // The create-profile popup is its own OS window (a viewport): it
+        // gets the same native title bar as the main window and is never
+        // clipped by it. The body asks for closure by return value, and the
+        // viewport's own X button is honored through close_requested.
         if *dialog_open {
             let mut close_requested = false;
-            egui::Area::new(egui::Id::new("new-profile-dialog"))
-                .order(egui::Order::Middle)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    egui::Frame::none()
-                        .fill(ui.visuals().panel_fill)
-                        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                        .rounding(8.0)
-                        .inner_margin(12.0)
-                        .shadow(egui::Shadow {
-                            offset: egui::vec2(0.0, 6.0),
-                            blur: 24.0,
-                            spread: 0.0,
-                            color: egui::Color32::from_black_alpha(96),
-                        })
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("New profile").strong());
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui.small_button("\u{00D7}").clicked() {
-                                            close_requested = true;
-                                        }
-                                    },
-                                );
-                            });
-                            ui.separator();
-                            close_requested |= dialog_body(
-                                ui,
-                                shared,
-                                &app,
-                                cards,
-                                theme_err,
-                                *preview_cell_w,
-                                dialog_name,
-                                dialog_source,
-                                dialog_preset_mode,
-                                dialog_preset_name,
-                                &mut action,
-                            );
-                        });
-                });
+            ctx.show_viewport_immediate(
+                egui::ViewportId(egui::Id::new("new-profile-dialog")),
+                egui::ViewportBuilder::default()
+                    .with_title("New profile")
+                    .with_inner_size([660.0, 560.0]),
+                |vp_ctx, _class| {
+                    egui::CentralPanel::default().show(vp_ctx, |ui| {
+                        if vp_ctx.input(|i| i.viewport().close_requested()) {
+                            close_requested = true;
+                        }
+                        close_requested |= dialog_body(
+                            ui,
+                            shared,
+                            &app,
+                            cards,
+                            theme_err,
+                            *preview_cell_w,
+                            dialog_name,
+                            dialog_source,
+                            dialog_preset_mode,
+                            dialog_preset_name,
+                            &mut action,
+                        );
+                    });
+                },
+            );
             if close_requested {
                 *dialog_open = false;
             }
         }
 
-        if fps != app.render_fps {
+if fps != app.render_fps {
             app.render_fps = fps;
         }
 
@@ -736,8 +731,36 @@ impl eframe::App for SettingsApp {
         // the write-back diff compares against is refreshed — otherwise this
         // frame's stale snapshots would overwrite the switch.
         if let Some(a) = action {
-            *theme_err = perform_action(shared, a).err();
-            *cards_dirty = true;
+            let structural = matches!(
+                a,
+                Action::NewProfile(..)
+                    | Action::DuplicateProfile(..)
+                    | Action::CreateCustom(..)
+                    | Action::DeleteProfile(..)
+            );
+            match perform_action(shared, a) {
+                Ok(refresh) => {
+                    *theme_err = None;
+                    // Targeted refresh: re-read the named profiles into
+                    // their existing cards without restarting the rest.
+                    for (theme, profile) in &refresh {
+                        if let Some(card) = cards
+                            .iter_mut()
+                            .find(|c| &c.theme == theme && &c.profile == profile)
+                        {
+                            if let Some(es) = shared.store.load_profile(theme, profile) {
+                                card.exprs = FrameExprs::build(&es);
+                                card.sim.reset();
+                                card.played = 0;
+                            }
+                        }
+                    }
+                    if structural {
+                        *cards_dirty = true;
+                    }
+                }
+                Err(e) => *theme_err = Some(e),
+            }
             s = shared.effects.read().unwrap().clone();
             app = shared.app.read().unwrap().clone();
             *saved = s.clone();
@@ -746,10 +769,22 @@ impl eframe::App for SettingsApp {
 
         // Any widget mutation lands in the shared state and on disk: effect
         // settings go to the active theme's profile file, app knobs to the
-        // root config.
+        // root config. The active card's preview replays with the new
+        // settings (this is the only point where settings actually change —
+        // a same-frame save/update pair is invisible to a next-frame
+        // comparison).
         if s != *saved {
             *shared.effects.write().unwrap() = s.clone();
             shared.save_effects();
+            let active = active_profile_in(&app, &app.theme);
+            if let Some(card) = cards
+                .iter_mut()
+                .find(|c| c.theme == app.theme && c.profile == active)
+            {
+                card.exprs = FrameExprs::build(&s);
+                card.sim.reset();
+                card.played = 0;
+            }
             *saved = s;
         }
         if app != *saved_app {
@@ -764,6 +799,7 @@ impl eframe::App for SettingsApp {
 fn profiles_group(
     ui: &mut egui::Ui,
     preview_cell_w: &mut f32,
+    delete_arm: &mut Option<std::time::Instant>,
     app: &AppConfig,
     cards: &[PreviewCard],
     theme_err: &mut Option<String>,
@@ -828,8 +864,21 @@ fn profiles_group(
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let active = active_profile_in(app, &app.theme);
-            if ui.button("Delete profile").clicked() {
-                *action = Some(Action::DeleteProfile(app.theme.clone(), active.clone()));
+            let armed = delete_arm
+                .as_ref()
+                .map(|t| t.elapsed().as_secs() < 4)
+                .unwrap_or(false);
+            let label = if armed { "Really delete?" } else { "Delete profile" };
+            if ui.button(label).clicked() {
+                if armed {
+                    *action =
+                        Some(Action::DeleteProfile(app.theme.clone(), active.clone()));
+                    *delete_arm = None;
+                } else {
+                    *delete_arm = Some(std::time::Instant::now());
+                }
+            } else if !armed {
+                *delete_arm = None;
             }
             if ui.button("Open presets folder").clicked() {
                 *action = Some(Action::OpenFolder);
@@ -898,10 +947,9 @@ fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
             ui.set_min_width(cell_w - 12.0);
             ui.set_min_height(img_h + 38.0);
             ui.centered_and_justified(|ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("+").size(26.0));
-                    ui.label(egui::RichText::new("New profile").small());
-                });
+                ui.add_space((img_h + 24.0) * 0.25);
+                ui.label(egui::RichText::new("+").size(26.0));
+                ui.label(egui::RichText::new("New profile").small());
             });
         });
     ui.interact(
