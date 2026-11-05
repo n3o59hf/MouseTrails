@@ -13,13 +13,23 @@ ripple out when you click.
 
 ## Features
 
-- **Mouse Trail** — a ribbon that flows behind the cursor. Three styles:
-  *Rainbow ribbon*, *Neon comet* (single color with glow), and *Ghost fade*.
+- **Themes** — pick a look from the settings window; every card shows a live
+  animated preview. Built in: *Default* (the classic rainbow look), *Winter*
+  (soft white trail with pink/blue halos, drifting snowflakes, pale
+  sparkles) and *Christmas* (candy-striped trail, spinning ornament balls,
+  golden bengal-fire sparks). Custom themes are JSON files, editable by hand.
+- **Mouse Trail** — a ribbon that flows behind the cursor. Five styles:
+  *Rainbow ribbon*, *Neon comet* (single color with glow), *Ghost fade*,
+  *Soft glow* (bright core with two tinted halos) and *Candy stripes*
+  (colors cycling along the trail).
 - **Bubbles** — soap bubbles spawn as you move, drift upward with buoyancy,
   drag, wobble, and are gently pushed around by the cursor. Left-click pops
-  nearby bubbles.
-- **Sparkles** — twinkling four-point stars scatter as the cursor moves,
-  with configurable gravity (negative floats up).
+  nearby bubbles. Shapes: soap bubbles, tumbling **snowflakes** (skip
+  collisions, fall gently) and **ornament balls** (spin from cursor speed,
+  damp heavily).
+- **Sparkles** — twinkling four-point stars (or soft dots) scatter as the
+  cursor moves, with configurable gravity (negative floats up), optional
+  motion streaks and generational child sparks (bengal-fire style).
 - **Click ripples** — expanding rings from every left click.
 - **Settings window** — every effect can be toggled and tuned live (rates,
   sizes, lifetimes, colors, trail style). Changes apply instantly and save
@@ -42,7 +52,7 @@ runtime is statically linked (`.cargo/config.toml` sets
 binary is LTO-optimized and stripped — it needs no Visual C++
 Redistributable, just copy the exe anywhere and run it (Windows 10/11; the
 only imports are system DLLs like `opengl32` and `dwmapi`). Settings stay
-per-user in `%APPDATA%\MouseTrails\config.json`. A convenience copy is kept
+per-user in `%APPDATA%\MouseTrails`. A convenience copy is kept
 at the repo root (gitignored).
 
 The exe carries the rainbow-ribbon icon (Explorer, taskbar, shortcuts) via an
@@ -76,6 +86,54 @@ manual download. The previous binary is kept next to the exe as
 nothing is installed silently.
 
 Settings are stored in `%APPDATA%\MouseTrails\config.json`.
+
+## Themes
+
+Themes live under `%APPDATA%\MouseTrails\`:
+
+```
+config.json                root config: active theme, per-theme profile
+                           selection, render FPS
+themes\<id>\
+  theme.json               theme definition (custom themes only)
+  default.json             profile: a complete effect-settings document
+  <name>.json              named profiles
+```
+
+Every theme keeps its own settings, so tuning the trail length for *Winter*
+doesn't touch *Default*. Each theme can additionally hold several named
+**profiles** — switch between them from the Themes group. A theme definition
+may theme only some of the effects (unthemed sections keep whatever the
+profile had) and can override the settings-window slider ranges via its
+`bounds` map, e.g. `"bubbles.size": [6, 60]`.
+
+The three built-in themes ship inside the exe; their definitions are the
+checked-in `themes/default.json`, `themes/winter.json` and
+`themes/christmas.json` in the repository, which also serve as templates.
+Creating a custom theme in the settings window copies the current theme's
+definition into `themes\<your-theme>\theme.json` — edit that file with any
+text editor and switch away and back to apply it. A `theme.json` on disk
+always overrides a built-in definition of the same id, so you can also edit
+a built-in theme that way.
+
+**Expressions:** selected numeric fields accept either a number or a short
+math expression string, evaluated once per frame:
+
+```json
+"buoyancy": "-20 + sin(t * 1.7) * 8",
+"rate": "6 + speed / 200"
+```
+
+Variables: `t` (seconds since start), `speed` (smoothed cursor px/s),
+`moving` (1 while moving, else 0), `pi`. Functions: `sin`, `cos`, `abs`,
+`floor`, `ceil`, `round`, `sqrt`, `min(a, …)`, `max(a, …)`, `clamp(x, lo,
+hi)`. Expressions are parsed when settings change (not per particle),
+evaluated exactly once per frame, and their results are clamped to safe
+ranges; a malformed expression falls back to the field's default. Fields:
+`trail.width`, `trail.hue_speed`, `bubbles.rate`, `bubbles.buoyancy`,
+`bubbles.wobble`, `bubbles.spin`, `sparkles.rate`, `sparkles.gravity`.
+In the settings window such fields show a monospace editor; the `=` button
+converts the expression back to a constant.
 
 ## How it works
 
@@ -124,8 +182,14 @@ src/main.rs         entry, single-instance guard, DPI awareness
 src/overlay.rs      fullscreen layered window, tray icon + menu, render loop
 src/effects.rs      effect simulation + tiny-skia rendering (trail, bubbles,
                     sparkles, ripples)
-src/settings.rs     settings model + JSON persistence
+src/settings.rs     effect settings model (cfg structs shared by themes)
+src/store.rs        config directory: root config, per-theme profiles,
+                    theme definitions, legacy-config migration
+src/themes.rs       built-in theme definitions (embedded JSON)
+src/expr.rs         per-frame expression fields (pre-parsed, evalexpr)
+src/preview.rs      animated theme previews for the settings window
 src/settings_ui.rs  egui settings window + thread management
 src/startup.rs      HKCU Run registry helpers
 src/icon.rs         procedural tray/window icon
+themes/             built-in theme JSONs (embedded; also authoring templates)
 ```
