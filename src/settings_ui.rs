@@ -507,7 +507,7 @@ impl eframe::App for SettingsApp {
             }
         }
         if visible {
-            let want_w = ((*preview_cell_w - 8.0).round() as u32).max(96);
+            let want_w = ((*preview_cell_w - 12.0).round() as u32).max(96);
             let want_h = (want_w as f32 * PREVIEW_ASPECT).round() as u32;
             for card in cards.iter_mut() {
                 card.sim.resize(want_w, want_h);
@@ -863,7 +863,7 @@ fn gallery_card(
         .rounding(6.0)
         .inner_margin(6.0)
         .show(ui, |ui| {
-            ui.set_min_width(cell_w);
+            ui.set_min_width(cell_w - 12.0);
             ui.vertical(|ui| {
                 if let Some(tex) = &card.texture {
                     ui.add(egui::Image::new((tex.id(), egui::vec2(img_w, img_h))));
@@ -895,7 +895,7 @@ fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
         .rounding(6.0)
         .inner_margin(6.0)
         .show(ui, |ui| {
-            ui.set_min_width(cell_w);
+            ui.set_min_width(cell_w - 12.0);
             ui.set_min_height(img_h + 38.0);
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
@@ -965,10 +965,8 @@ fn dialog_body(
                 tex: Option<&egui::TextureHandle>,
                 tile_w: f32|
      -> egui::Response {
-        let (img_w, img_h) = match tex {
-            Some(_) => (tile_w, tile_w * PREVIEW_ASPECT),
-            None => (tile_w - 8.0, (tile_w - 8.0) * PREVIEW_ASPECT),
-        };
+        let img_w = tile_w - 12.0;
+        let img_h = img_w * PREVIEW_ASPECT;
         let fill = if selected {
             ui.visuals().selection.bg_fill
         } else {
@@ -982,7 +980,7 @@ fn dialog_body(
             .rounding(6.0)
             .inner_margin(6.0)
             .show(ui, |ui| {
-                ui.set_min_width(tile_w + 8.0);
+                ui.set_min_width(tile_w - 12.0);
                 ui.vertical(|ui| {
                     if let Some(tex) = tex {
                         ui.add(egui::Image::new((tex.id(), egui::vec2(img_w, img_h))));
