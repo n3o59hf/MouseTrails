@@ -114,12 +114,13 @@ defaults for the rest.
 The three built-in presets ship inside the exe; their definitions are the
 checked-in `themes/default.json`, `themes/winter.json` and
 `themes/christmas.json` in the repository, which also serve as templates.
-Creating a custom preset in the settings window copies the current preset's
-definition into `themes\<your-preset>\theme.json` — edit that file with any
-text editor and create a profile from it to apply it. A `theme.json` on
-disk overrides a built-in definition of the same id, so you can also edit a
-built-in preset that way. Presets are starting values only: slider ranges
-are global, and presets never change once a profile exists.
+The **New preset** window starts one from an empty definition, a copy of
+any existing preset, or a snapshot of any profile — it writes
+`themes\<your-preset>\theme.json` and opens that folder so the definition
+can be edited by hand; create a profile from it to apply it. A `theme.json`
+on disk overrides a built-in definition of the same id, so you can also
+edit a built-in preset that way. Presets are starting values only: slider
+ranges are global, and presets never change once a profile exists.
 
 **Expressions:** selected numeric fields accept either a number or a short
 math expression string, evaluated once per frame:

@@ -106,8 +106,9 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         dialog_open: false,
         dialog_name: String::new(),
         dialog_source: None,
-        dialog_preset_mode: false,
-        dialog_preset_name: String::new(),
+        preset_dialog_open: false,
+        preset_dialog_name: String::new(),
+        preset_dialog_source: None,
         window_visible: true,
     };
 
@@ -193,9 +194,10 @@ struct SettingsApp {
     dialog_open: bool,
     dialog_name: String,
     dialog_source: Option<DialogSource>,
-    /// Inline "new preset" form inside the dialog.
-    dialog_preset_mode: bool,
-    dialog_preset_name: String,
+    /// The new-preset window state.
+    preset_dialog_open: bool,
+    preset_dialog_name: String,
+    preset_dialog_source: Option<PresetSource>,
     /// Tracked hide/show state of the window (drives preview animation).
     window_visible: bool,
 }
@@ -207,6 +209,17 @@ enum DialogSource {
     Preset(String),
     /// Exact copy of an existing profile.
     Duplicate(String, String),
+}
+
+/// What a new preset starts from, chosen in the new-preset window.
+#[derive(Clone, Debug, PartialEq)]
+enum PresetSource {
+    /// No themed sections — a blank theme.json to fill in by hand.
+    Empty,
+    /// Copy of an existing preset's definition.
+    CopyPreset(String),
+    /// Snapshot of an existing profile: every section themed to its values.
+    CopyProfile(String, String),
 }
 
 struct PreviewCard {
@@ -302,9 +315,9 @@ enum Action {
     /// Copy an existing profile under its own preset and switch to it.
     DuplicateProfile(String, String, String),
     DeleteProfile(String, String),
-    /// Create a custom preset from the current one, with a default profile.
-    /// With `switch`, also switch to that preset's new profile.
-    CreateCustom(String, bool),
+    /// Create a custom preset from the given source, with a default
+    /// profile built from it.
+    CreateCustom(String, PresetSource),
     OpenFolder,
 }
 
@@ -366,27 +379,30 @@ fn perform_action(
             .map(|_| Vec::new())
         }
         Action::DeleteProfile(theme, profile) => {
-            // If it's the active one, move to another profile of the same
-            // preset first.
+            // If it's the active one, move to any other profile first. When
+            // none remain anywhere, the in-memory settings simply stay
+            // active until a new profile is created.
             if shared.active_profile(&theme) == profile {
-                let remaining: Vec<String> = shared
-                    .store
-                    .list_profiles(&theme)
-                    .into_iter()
-                    .filter(|p| *p != profile)
-                    .collect();
-                match remaining.first() {
-                    Some(next) => {
-                        let es = shared
-                            .store
-                            .load_profile(&theme, next)
-                            .unwrap_or_else(|| themes::materialize_profile(&shared.store, &theme));
-                        *shared.effects.write().unwrap() = es;
-                        let mut app = shared.app.write().unwrap();
-                        app.profiles.insert(theme.clone(), next.clone());
-                        shared.store.save_app(&app);
+                let mut remaining: Vec<(String, String)> = Vec::new();
+                for t in theme_ids(shared) {
+                    for pr in shared.store.list_profiles(&t) {
+                        if !(t == theme && pr == profile) {
+                            remaining.push((t.clone(), pr));
+                        }
                     }
-                    None => return Err("Every preset keeps at least one profile.".to_string()),
+                }
+                if let Some((next_theme, next_profile)) = remaining.first() {
+                    let es = shared
+                        .store
+                        .load_profile(next_theme, next_profile)
+                        .unwrap_or_else(|| {
+                            themes::materialize_profile(&shared.store, next_theme)
+                        });
+                    *shared.effects.write().unwrap() = es;
+                    let mut app = shared.app.write().unwrap();
+                    app.theme = next_theme.clone();
+                    app.profiles.insert(next_theme.clone(), next_profile.clone());
+                    shared.store.save_app(&app);
                 }
             }
             if !shared.store.delete_profile(&theme, &profile) {
@@ -409,17 +425,41 @@ fn perform_action(
             shared.store.save_profile(&src_theme, &id, &es);
             perform_action(shared, Action::SwitchProfile(src_theme, id))
         }
-        Action::CreateCustom(name, switch) => {
+        Action::CreateCustom(name, src) => {
             let display = name.trim().to_string();
             let id = store::sanitize_id(&name)
                 .ok_or_else(|| "Preset name is empty or reserved.".to_string())?;
             if themes::builtin(&id).is_some() || shared.store.theme_exists(&id) {
                 return Err(format!("A preset named \u{201C}{}\u{201D} already exists.", id));
             }
-            // The custom preset starts as a copy of the current preset's
-            // definition — edit it on disk (Open presets folder) to restyle.
-            let current_theme = shared.app.read().unwrap().theme.clone();
-            let mut def = themes::load_def(&shared.store, &current_theme).unwrap_or_default();
+            let mut def = match &src {
+                PresetSource::Empty => ThemeDef {
+                    name: id.clone(),
+                    description: String::new(),
+                    ..ThemeDef::default()
+                },
+                PresetSource::CopyPreset(from) => {
+                    themes::load_def(&shared.store, from).unwrap_or_default()
+                }
+                PresetSource::CopyProfile(from_theme, from_profile) => {
+                    let es = shared.store.load_profile(from_theme, from_profile).ok_or_else(
+                        || {
+                            format!(
+                                "Profile \u{201C}{}\u{201D} no longer exists.",
+                                from_profile
+                            )
+                        },
+                    )?;
+                    ThemeDef {
+                        name: id.clone(),
+                        description: format!("Snapshot of {} \u{00b7} {}", from_theme, from_profile),
+                        trail: Some(es.trail),
+                        bubbles: Some(es.bubbles),
+                        sparkles: Some(es.sparkles),
+                        ripples: Some(es.ripples),
+                    }
+                }
+            };
             def.name = if display.is_empty() { id.clone() } else { display };
             shared.store.save_theme_def(&id, &def);
             let current = shared.effects.read().unwrap().clone();
@@ -429,9 +469,6 @@ fn perform_action(
             // is the whole point of creating one.
             let dir = shared.store.base().join("themes").join(&id);
             let _ = std::process::Command::new("explorer").arg(&dir).spawn();
-            if switch {
-                perform_action(shared, Action::SwitchProfile(id, store::DEFAULT_PROFILE.into()))?;
-            }
             ok(Vec::new())
         }
         Action::OpenFolder => {
@@ -493,8 +530,9 @@ impl eframe::App for SettingsApp {
             dialog_open,
             dialog_name,
             dialog_source,
-            dialog_preset_mode,
-            dialog_preset_name,
+            preset_dialog_open,
+            preset_dialog_name,
+            preset_dialog_source,
             saved,
             saved_app,
             startup,
@@ -699,8 +737,7 @@ impl eframe::App for SettingsApp {
                             *preview_cell_w,
                             dialog_name,
                             dialog_source,
-                            dialog_preset_mode,
-                            dialog_preset_name,
+                            preset_dialog_open,
                             &mut action,
                         );
                     });
@@ -708,6 +745,36 @@ impl eframe::App for SettingsApp {
             );
             if close_requested {
                 *dialog_open = false;
+            }
+        }
+
+        // The new-preset window: its own OS window, same chrome.
+        if *preset_dialog_open {
+            let mut close_requested = false;
+            ctx.show_viewport_immediate(
+                egui::ViewportId(egui::Id::new("new-preset-dialog")),
+                egui::ViewportBuilder::default()
+                    .with_title("New preset")
+                    .with_inner_size([660.0, 640.0]),
+                |vp_ctx, _class| {
+                    egui::CentralPanel::default().show(vp_ctx, |ui| {
+                        if vp_ctx.input(|i| i.viewport().close_requested()) {
+                            close_requested = true;
+                        }
+                        close_requested |= preset_dialog_body(
+                            ui,
+                            shared,
+                            cards,
+                            theme_err,
+                            preset_dialog_name,
+                            preset_dialog_source,
+                            &mut action,
+                        );
+                    });
+                },
+            );
+            if close_requested {
+                *preset_dialog_open = false;
             }
         }
 
@@ -965,7 +1032,7 @@ fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
 
 /// Body of the create-profile popup: a name field, then one unified list of
 /// sources with live previews — the current profile (duplicated), every
-/// preset — and a "+" tile that creates a new preset on the spot.
+/// preset — and a "+" tile that opens the new-preset window.
 #[allow(clippy::too_many_arguments)]
 fn dialog_body(
     ui: &mut egui::Ui,
@@ -976,8 +1043,7 @@ fn dialog_body(
     tile_w: f32,
     name: &mut String,
     source: &mut Option<DialogSource>,
-    preset_mode: &mut bool,
-    preset_name: &mut String,
+    open_preset_dialog: &mut bool,
     action: &mut Option<Action>,
 ) -> bool {
     ui.label("Name");
@@ -1084,10 +1150,10 @@ fn dialog_body(
                         ui.end_row();
                     }
                 }
-                // "+" tile: create a new preset inline.
-                let resp = tile(ui, *preset_mode, "+", "new preset", None, tile_w, true);
+                // "+" tile: opens the new-preset window.
+                let resp = tile(ui, false, "+", "new preset", None, tile_w, true);
                 if resp.clicked() {
-                    *preset_mode = !*preset_mode;
+                    *open_preset_dialog = true;
                 }
                 placed += 1;
                 if placed % DIALOG_COLS != 0 {
@@ -1095,23 +1161,6 @@ fn dialog_body(
                 }
             });
     });
-
-    // The inline new-preset form lives outside the scroll area so toggling
-    // the "+" tile is always visibly answered.
-    if *preset_mode {
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("New preset:");
-            ui.text_edit_singleline(preset_name);
-            if ui.button("Create").clicked() {
-                // Created from the current preset's definition; it then
-                // appears among the source tiles above.
-                *action = Some(Action::CreateCustom(preset_name.clone(), false));
-                preset_name.clear();
-                *preset_mode = false;
-            }
-        });
-    }
 
     if let Some(err) = &*theme_err {
         ui.add_space(4.0);
@@ -1134,17 +1183,177 @@ fn dialog_body(
             }
             name.clear();
             *source = None;
-            *preset_mode = false;
             close = true;
         }
         if ui.button("Cancel").clicked() {
             name.clear();
             *source = None;
-            *preset_mode = false;
             close = true;
         }
     });
     close
+}
+
+/// Body of the new-preset window: a name and one unified list of sources —
+/// an empty slate, any existing preset, or any profile as a full snapshot —
+/// each with a live preview tile.
+#[allow(clippy::too_many_arguments)]
+fn preset_dialog_body(
+    ui: &mut egui::Ui,
+    shared: &SharedSettings,
+    cards: &[PreviewCard],
+    theme_err: &mut Option<String>,
+    name: &mut String,
+    source: &mut Option<PresetSource>,
+    action: &mut Option<Action>,
+) -> bool {
+    ui.label("Name");
+    ui.text_edit_singleline(name);
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Start from").strong());
+
+    let tile = |ui: &mut egui::Ui,
+                selected: bool,
+                title: &str,
+                sub: &str,
+                tex: Option<&egui::TextureHandle>,
+                tile_w: f32,
+                accent: bool|
+     -> egui::Response {
+        let img_w = tile_w - 12.0;
+        let img_h = img_w * PREVIEW_ASPECT;
+        let fill = if selected {
+            ui.visuals().selection.bg_fill
+        } else {
+            ui.visuals().faint_bg_color
+        };
+        let stroke =
+            if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
+        let inner = egui::Frame::none()
+            .fill(fill)
+            .stroke(stroke)
+            .rounding(6.0)
+            .inner_margin(6.0)
+            .show(ui, |ui| {
+                ui.set_min_width(tile_w - 12.0);
+                ui.vertical(|ui| {
+                    if let Some(tex) = tex {
+                        ui.add(egui::Image::new((tex.id(), egui::vec2(img_w, img_h))));
+                    } else {
+                        ui.set_min_size(egui::vec2(img_w, img_h));
+                    }
+                    ui.add_space(2.0);
+                    if accent {
+                        ui.label(egui::RichText::new(title).strong().size(20.0));
+                    } else {
+                        ui.label(egui::RichText::new(title).strong());
+                    }
+                    ui.label(
+                        egui::RichText::new(sub).small().color(egui::Color32::from_gray(200)),
+                    );
+                });
+            });
+        ui.interact(
+            inner.response.rect,
+            egui::Id::new(("preset-source-tile", title, sub)),
+            egui::Sense::click(),
+        )
+    };
+
+    // Unified sources: empty slate, every preset, every profile.
+    let mut sources: Vec<(PresetSource, String, String, Option<&PreviewCard>)> = Vec::new();
+    sources.push((
+        PresetSource::Empty,
+        "Empty".to_string(),
+        "no themed sections".to_string(),
+        None,
+    ));
+    for theme in theme_ids(shared) {
+        let title = themes::load_def(&shared.store, &theme)
+            .map(|d| d.name)
+            .unwrap_or_else(|| theme.clone());
+        let card = cards
+            .iter()
+            .find(|c| c.theme == theme && c.profile == store::DEFAULT_PROFILE);
+        sources.push((
+            PresetSource::CopyPreset(theme.clone()),
+            title,
+            format!("copy of preset: {}", theme),
+            card,
+        ));
+    }
+    for theme in theme_ids(shared) {
+        for profile in shared.store.list_profiles(&theme) {
+            let label = if theme == "default" {
+                profile.clone()
+            } else {
+                format!("{} \u{00b7} {}", theme, profile)
+            };
+            let card = cards.iter().find(|c| c.theme == theme && c.profile == profile);
+            sources.push((
+                PresetSource::CopyProfile(theme.clone(), profile.clone()),
+                label,
+                "copy of profile".to_string(),
+                card,
+            ));
+        }
+    }
+
+    let tile_w =
+        ((ui.available_width() - 2.0 * TILE_SPACING - 8.0) / DIALOG_COLS as f32).max(120.0);
+    egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+        egui::Grid::new("preset_source_grid")
+            .spacing([TILE_SPACING, TILE_SPACING])
+            .num_columns(DIALOG_COLS)
+            .show(ui, |ui| {
+                let mut placed = 0;
+                for (src, title, sub, card) in &sources {
+                    let selected = match (source.as_ref(), src) {
+                        (Some(PresetSource::Empty), PresetSource::Empty) => true,
+                        (Some(PresetSource::CopyPreset(a)), PresetSource::CopyPreset(b)) => a == b,
+                        (Some(PresetSource::CopyProfile(t1, p1)), PresetSource::CopyProfile(t2, p2)) => {
+                            t1 == t2 && p1 == p2
+                        }
+                        _ => false,
+                    };
+                    let tex = card.and_then(|c| c.texture.as_ref());
+                    let resp = tile(ui, selected, title, sub, tex, tile_w, title == "+");
+                    if resp.clicked() {
+                        *source = Some(src.clone());
+                    }
+                    placed += 1;
+                    if placed % DIALOG_COLS == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+    });
+
+    if let Some(err) = &*theme_err {
+        ui.add_space(4.0);
+        ui.colored_label(egui::Color32::RED, err.clone());
+    }
+
+    ui.add_space(8.0);
+    let mut close = false;
+    ui.horizontal(|ui| {
+        let ready = !name.trim().is_empty() && source.is_some();
+        if ui.add_enabled(ready, egui::Button::new("Create")).clicked() {
+            if let Some(src) = source.clone() {
+                *action = Some(Action::CreateCustom(name.clone(), src));
+            }
+            name.clear();
+            *source = None;
+            return true;
+        }
+        if ui.button("Cancel").clicked() {
+            name.clear();
+            *source = None;
+            return true;
+        }
+        false
+    });
+    false
 }
 
 fn trail_section(ui: &mut egui::Ui, s: &mut EffectSettings) {

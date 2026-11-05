@@ -340,12 +340,10 @@ impl Store {
         self.list_themes().iter().any(|t| t.eq_ignore_ascii_case(id))
     }
 
-    /// Delete a profile file. Returns whether something was removed. The
-    /// last remaining profile is refused — every theme keeps at least one.
+    /// Delete a profile file. Returns whether something was removed. A
+    /// preset may end up with zero profiles — it stays available as a base
+    /// for new ones.
     pub fn delete_profile(&self, theme: &str, profile: &str) -> bool {
-        if self.list_profiles(theme).len() <= 1 {
-            return false;
-        }
         std::fs::remove_file(self.profile_path(theme, profile)).is_ok()
     }
 
@@ -573,9 +571,9 @@ mod tests {
 
         assert!(store.delete_profile("default", "cozy"));
         assert_eq!(store.list_profiles("default"), vec!["default".to_string()]);
-        // The last profile is protected.
-        assert!(!store.delete_profile("default", "default"));
-        assert_eq!(store.list_profiles("default"), vec!["default".to_string()]);
+        // A preset may end up with zero profiles — nothing enforces a floor.
+        assert!(store.delete_profile("default", "default"));
+        assert!(store.list_profiles("default").is_empty());
     }
 
     #[test]
