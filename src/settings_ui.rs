@@ -425,6 +425,10 @@ fn perform_action(
             let current = shared.effects.read().unwrap().clone();
             let es = themes::apply_def(&def, &current);
             shared.store.save_profile(&id, store::DEFAULT_PROFILE, &es);
+            // Open the new preset's folder right away — editing theme.json
+            // is the whole point of creating one.
+            let dir = shared.store.base().join("themes").join(&id);
+            let _ = std::process::Command::new("explorer").arg(&dir).spawn();
             if switch {
                 perform_action(shared, Action::SwitchProfile(id, store::DEFAULT_PROFILE.into()))?;
             }
@@ -947,8 +951,8 @@ fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
             ui.set_min_width(cell_w - 12.0);
             ui.set_min_height(img_h + 38.0);
             ui.centered_and_justified(|ui| {
-                ui.add_space((img_h + 24.0) * 0.25);
-                ui.label(egui::RichText::new("+").size(26.0));
+                ui.add_space((img_h + 24.0) * 0.3);
+                ui.label(egui::RichText::new("+").size(17.0));
                 ui.label(egui::RichText::new("New profile").small());
             });
         });
@@ -1011,7 +1015,8 @@ fn dialog_body(
                 title: &str,
                 sub: &str,
                 tex: Option<&egui::TextureHandle>,
-                tile_w: f32|
+                tile_w: f32,
+                accent: bool|
      -> egui::Response {
         let img_w = tile_w - 12.0;
         let img_h = img_w * PREVIEW_ASPECT;
@@ -1036,7 +1041,11 @@ fn dialog_body(
                         ui.set_min_size(egui::vec2(img_w, img_h));
                     }
                     ui.add_space(2.0);
-                    ui.label(egui::RichText::new(title).strong());
+                    if accent {
+                        ui.label(egui::RichText::new(title).strong().size(20.0));
+                    } else {
+                        ui.label(egui::RichText::new(title).strong());
+                    }
                     ui.label(egui::RichText::new(sub).small().color(egui::Color32::from_gray(200)));
                 });
             });
@@ -1066,7 +1075,7 @@ fn dialog_body(
                         _ => false,
                     };
                     let tex = card.and_then(|c| c.texture.as_ref());
-                    let resp = tile(ui, selected, title, sub, tex, tile_w);
+                    let resp = tile(ui, selected, title, sub, tex, tile_w, false);
                     if resp.clicked() {
                         *source = Some(src.clone());
                     }
@@ -1076,7 +1085,7 @@ fn dialog_body(
                     }
                 }
                 // "+" tile: create a new preset inline.
-                let resp = tile(ui, *preset_mode, "+", "new preset", None, tile_w);
+                let resp = tile(ui, *preset_mode, "+", "new preset", None, tile_w, true);
                 if resp.clicked() {
                     *preset_mode = !*preset_mode;
                 }
