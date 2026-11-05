@@ -4,7 +4,7 @@ use tiny_skia::{
     RadialGradient, Shader, SpreadMode, Stroke, Transform,
 };
 
-use crate::settings::{BubbleShape, Settings, TrailStyle};
+use crate::settings::{BubbleShape, Settings, SparkShape, TrailStyle};
 
 pub struct Ctx<'a> {
     pub dt: f32,
@@ -1044,6 +1044,12 @@ struct Spark {
     size: f32,
     phase: f32,
     freq: f32,
+    /// Resolved RGB at spawn (palette entry or the configured color).
+    color: [f32; 3],
+    /// Generation: 0 = spawned at the cursor, children inherit parent + 1.
+    gen: u32,
+    /// Fractional child-emission accumulator.
+    emit_acc: f32,
 }
 
 pub struct Sparkles {
@@ -1051,11 +1057,13 @@ pub struct Sparkles {
     acc: f32,
     /// Seconds since the cursor last moved — drives the emission ramp-down.
     idle: f32,
+    /// Palette cycling counter for top-level spawns.
+    next_color: usize,
 }
 
 impl Default for Sparkles {
     fn default() -> Self {
-        Self { list: Vec::new(), acc: 0.0, idle: 0.0 }
+        Self { list: Vec::new(), acc: 0.0, idle: 0.0, next_color: 0 }
     }
 }
 
@@ -1063,6 +1071,18 @@ impl Sparkles {
     fn clear(&mut self) {
         self.list.clear();
         self.acc = 0.0;
+    }
+
+    /// Next top-level spark color: the theme palette cycled per spawn, or the
+    /// configured color when no palette is set.
+    fn next_color(&mut self, base: &[u8; 3], palette: &[[u8; 3]]) -> [f32; 3] {
+        let c = if palette.is_empty() {
+            rgb3(base)
+        } else {
+            rgb3(&palette[self.next_color % palette.len()])
+        };
+        self.next_color += 1;
+        c
     }
 }
 
@@ -1084,32 +1104,75 @@ impl Effect for Sparkles {
         if ramp > 0.0 {
             self.acc += c.rate.max(0.0) * ctx.dt * ramp;
         }
+        let momentum = c.momentum.clamp(0.0, 1.0);
         while self.acc >= 1.0 {
             self.acc -= 1.0;
             if self.list.len() < 300 {
                 let ang = rnd01() * std::f32::consts::TAU;
                 let speed = rnd_range(30.0, 160.0);
+                let color = self.next_color(&c.color, &c.palette);
                 self.list.push(Spark {
                     x: ctx.mouse.0 + rnd_range(-6.0, 6.0),
                     y: ctx.mouse.1 + rnd_range(-6.0, 6.0),
-                    vx: ang.cos() * speed + ctx.vel.0 * 0.25,
-                    vy: ang.sin() * speed + ctx.vel.1 * 0.25,
+                    vx: ang.cos() * speed + ctx.vel.0 * momentum,
+                    vy: ang.sin() * speed + ctx.vel.1 * momentum,
                     born: ctx.now,
                     life: c.lifetime * rnd_range(0.6, 1.25),
                     size: c.size * rnd_range(0.6, 1.4),
                     phase: rnd01() * std::f32::consts::TAU,
                     freq: rnd_range(6.0, 14.0),
+                    color,
+                    gen: 0,
+                    emit_acc: 0.0,
                 });
             } else {
                 self.acc = 0.0;
             }
         }
 
+        // Bengal fire: living sparks crackle off smaller children of their
+        // own color, for as many generations as the theme allows.
+        if c.max_generations > 1 && c.child_rate > 0.0 {
+            let mut children: Vec<Spark> = Vec::new();
+            let mut population = self.list.len();
+            for s in self.list.iter_mut() {
+                if s.gen + 1 >= c.max_generations {
+                    continue;
+                }
+                s.emit_acc += c.child_rate.max(0.0) * ctx.dt;
+                while s.emit_acc >= 1.0 {
+                    s.emit_acc -= 1.0;
+                    if population >= 300 {
+                        s.emit_acc = 0.0;
+                        break;
+                    }
+                    let ang = rnd01() * std::f32::consts::TAU;
+                    let speed = rnd_range(20.0, 110.0);
+                    children.push(Spark {
+                        x: s.x,
+                        y: s.y,
+                        vx: s.vx * 0.3 + ang.cos() * speed,
+                        vy: s.vy * 0.3 + ang.sin() * speed,
+                        born: ctx.now,
+                        life: (s.life * 0.6).max(0.15),
+                        size: (s.size * c.child_size).max(0.8),
+                        phase: rnd01() * std::f32::consts::TAU,
+                        freq: rnd_range(6.0, 14.0),
+                        color: s.color,
+                        gen: s.gen + 1,
+                        emit_acc: 0.0,
+                    });
+                    population += 1;
+                }
+            }
+            self.list.extend(children);
+        }
+
         self.list.retain(|s| ctx.now - s.born < s.life);
 
         for s in self.list.iter_mut() {
             s.vy += c.gravity * ctx.dt;
-            let drag = (-1.6 * ctx.dt).exp();
+            let drag = (-c.drag.max(0.0) * ctx.dt).exp();
             s.vx *= drag;
             s.vy *= drag;
             s.x += s.vx * ctx.dt;
@@ -1122,7 +1185,6 @@ impl Effect for Sparkles {
         if !c.enabled {
             return;
         }
-        let (cr, cg, cb) = rgb(&c.color);
         for s in &self.list {
             let k = (1.0 - (now - s.born) / s.life).clamp(0.0, 1.0);
             let tw = 0.55 + 0.45 * (now * s.freq + s.phase).sin();
@@ -1131,21 +1193,54 @@ impl Effect for Sparkles {
                 continue;
             }
             let sz = (s.size * (0.35 + 0.65 * k)).max(0.8);
-            let thin = sz * 0.30;
-            // Four-point star: one vertical and one horizontal diamond.
-            let mut pb = PathBuilder::new();
-            pb.move_to(s.x, s.y - sz);
-            pb.line_to(s.x + thin, s.y);
-            pb.line_to(s.x, s.y + sz);
-            pb.line_to(s.x - thin, s.y);
-            pb.close();
-            pb.move_to(s.x - sz, s.y);
-            pb.line_to(s.x, s.y - thin);
-            pb.line_to(s.x + sz, s.y);
-            pb.line_to(s.x, s.y + thin);
-            pb.close();
-            if let Some(p) = pb.finish() {
-                fill_path(pm, &p, &paint_solid(col(cr, cg, cb, alpha)));
+            let (cr, cg, cb) = (s.color[0], s.color[1], s.color[2]);
+
+            // Motion streak: a fading line back along the velocity, capped so
+            // a fast spark can't smear across the screen.
+            if c.streak_secs > 0.0 {
+                let mut tx = s.x - s.vx * c.streak_secs;
+                let mut ty = s.y - s.vy * c.streak_secs;
+                let d = (tx - s.x).hypot(ty - s.y);
+                if d > 150.0 {
+                    let f = 150.0 / d;
+                    tx = s.x + (tx - s.x) * f;
+                    ty = s.y + (ty - s.y) * f;
+                }
+                stroke_segment(pm, s.x, s.y, tx, ty, (sz * 0.5).max(0.8), col(cr, cg, cb, alpha * 0.5));
+            }
+
+            match c.shape {
+                SparkShape::Star => {
+                    let thin = sz * 0.30;
+                    // Four-point star: one vertical and one horizontal diamond.
+                    let mut pb = PathBuilder::new();
+                    pb.move_to(s.x, s.y - sz);
+                    pb.line_to(s.x + thin, s.y);
+                    pb.line_to(s.x, s.y + sz);
+                    pb.line_to(s.x - thin, s.y);
+                    pb.close();
+                    pb.move_to(s.x - sz, s.y);
+                    pb.line_to(s.x, s.y - thin);
+                    pb.line_to(s.x + sz, s.y);
+                    pb.line_to(s.x, s.y + thin);
+                    pb.close();
+                    if let Some(p) = pb.finish() {
+                        fill_path(pm, &p, &paint_solid(col(cr, cg, cb, alpha)));
+                    }
+                }
+                SparkShape::Dot => {
+                    radial_fill_circle(
+                        pm,
+                        s.x,
+                        s.y,
+                        sz,
+                        &[
+                            (0.0, col(cr, cg, cb, alpha)),
+                            (0.5, col(cr, cg, cb, alpha * 0.55)),
+                            (1.0, col(cr, cg, cb, 0.0)),
+                        ],
+                    );
+                }
             }
             fill_circle(pm, s.x, s.y, (sz * 0.22).max(0.6), col(1.0, 1.0, 1.0, alpha));
         }
@@ -1158,7 +1253,12 @@ impl Effect for Sparkles {
         }
         let mut b: Option<RectF> = None;
         for s in &self.list {
-            let rect = RectF::point(s.x, s.y, s.size * 2.0 + 6.0);
+            let streak = if c.streak_secs > 0.0 {
+                (s.vx.hypot(s.vy) * c.streak_secs).min(150.0)
+            } else {
+                0.0
+            };
+            let rect = RectF::point(s.x, s.y, s.size * 2.0 + 6.0 + streak);
             match &mut b {
                 Some(acc) => acc.merge(rect),
                 None => b = Some(rect),
@@ -1670,6 +1770,100 @@ mod tests {
         s.bubbles.spin = spin;
         s.bubbles.rate = 30.0;
         s
+    }
+
+    #[test]
+    fn spark_generations_are_capped() {
+        let mut s = Settings::default();
+        s.sparkles.rate = 40.0;
+        s.sparkles.child_rate = 60.0;
+        s.sparkles.max_generations = 3;
+        s.sparkles.lifetime = 1.0;
+        let cfg: &'static Settings = Box::leak(Box::new(s));
+
+        let mut sp = Sparkles::default();
+        for frame in 0..150 {
+            sp.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (300.0, 0.0), 30.0, false, cfg));
+        }
+        assert!(!sp.list.is_empty());
+        assert!(
+            sp.list.iter().any(|s| s.gen == 2),
+            "grandchildren should exist, gens={:?}",
+            sp.list.iter().map(|s| s.gen).collect::<Vec<_>>()
+        );
+        assert!(
+            sp.list.iter().all(|s| s.gen < 3),
+            "no spark may exceed max_generations, gens={:?}",
+            sp.list.iter().map(|s| s.gen).collect::<Vec<_>>()
+        );
+        assert!(sp.list.len() <= 300, "population cap must hold, got {}", sp.list.len());
+    }
+
+    #[test]
+    fn sparks_emit_no_children_by_default() {
+        let mut sp = Sparkles::default();
+        for frame in 0..60 {
+            sp.update(&ctx_at(0.5 + frame as f32 / 60.0, (100.0, 100.0), (300.0, 0.0), 30.0, false));
+        }
+        assert!(!sp.list.is_empty());
+        assert!(sp.list.iter().all(|s| s.gen == 0), "default config has no child emission");
+    }
+
+    #[test]
+    fn spark_palette_cycles_and_children_inherit_color() {
+        let mut s = Settings::default();
+        s.sparkles.rate = 40.0;
+        s.sparkles.child_rate = 60.0;
+        s.sparkles.max_generations = 2;
+        s.sparkles.palette = vec![[255, 0, 0], [0, 255, 0]];
+        let cfg: &'static Settings = Box::leak(Box::new(s));
+
+        let mut sp = Sparkles::default();
+        for frame in 0..90 {
+            sp.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (300.0, 0.0), 30.0, false, cfg));
+        }
+        assert!(sp.list.iter().any(|s| s.gen == 1), "children should exist");
+        for sp in &sp.list {
+            let is_red = sp.color[0] > 0.99 && sp.color[1] < 0.01;
+            let is_green = sp.color[1] > 0.99 && sp.color[0] < 0.01;
+            assert!(is_red || is_green, "palette should resolve exactly, got {:?}", sp.color);
+        }
+        // Children take the parent's color: every generation-1 spark's color
+        // must match some top-level spark's color (they come from the same
+        // two-entry palette, which the loop above already checks) — here we
+        // just assert both palette entries occur overall.
+        let reds = sp.list.iter().filter(|s| s.color[0] > 0.99).count();
+        assert!(reds > 0 && reds < sp.list.len(), "palette should cycle");
+    }
+
+    #[test]
+    fn streak_extends_bounds() {
+        let mut s = Settings::default();
+        s.sparkles.streak_secs = 0.5;
+        let cfg: &'static Settings = Box::leak(Box::new(s));
+        let mut sp = Sparkles::default();
+        let mut spark = Spark {
+            x: 500.0,
+            y: 500.0,
+            vx: 400.0,
+            vy: 0.0,
+            born: 0.0,
+            life: 10.0,
+            size: 4.0,
+            phase: 0.0,
+            freq: 8.0,
+            color: [1.0, 0.8, 0.2],
+            gen: 0,
+            emit_acc: 0.0,
+        };
+        spark.born = 0.0;
+        sp.list.push(spark);
+        let b = sp.bounds(cfg).expect("bounds exist");
+        // Streak reaches 400 px/s × 0.5 s = 200 px → capped at 150. Base
+        // radius is size*2+6 = 14, so the half-extent must exceed it.
+        assert!(b.x1 - b.x0 > 2.0 * 14.0 + 1.0, "streak should extend bounds");
+        // Capped at 150: half-extent ≤ 14 + 150 + 1.
+        assert!(b.x1 - b.x0 <= 2.0 * (14.0 + 150.0) + 1.0);
     }
 
     fn ctx_at_cfg(

@@ -6,7 +6,7 @@ use eframe::egui;
 use windows::core::{w, PCWSTR};
 
 use crate::icon;
-use crate::settings::{self, BubbleShape, Settings, TrailStyle};
+use crate::settings::{self, BubbleShape, Settings, SparkShape, TrailStyle};
 use crate::startup;
 
 pub enum UiMsg {
@@ -458,7 +458,20 @@ fn bubbles_section(ui: &mut egui::Ui, s: &mut Settings) {
 
 fn sparkles_section(ui: &mut egui::Ui, s: &mut Settings) {
     ui.group(|ui| {
-        ui.checkbox(&mut s.sparkles.enabled, "Sparkles");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.sparkles.enabled, "Sparkles");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                egui::ComboBox::from_id_source("spark_shape")
+                    .selected_text(match s.sparkles.shape {
+                        SparkShape::Star => "Stars",
+                        SparkShape::Dot => "Dots",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut s.sparkles.shape, SparkShape::Star, "Stars");
+                        ui.selectable_value(&mut s.sparkles.shape, SparkShape::Dot, "Dots");
+                    });
+            });
+        });
         ui.label(
             egui::RichText::new("Tiny sparkles scatter as the cursor moves.").small().weak(),
         );
@@ -480,6 +493,31 @@ fn sparkles_section(ui: &mut egui::Ui, s: &mut Settings) {
                 ui.label("Color");
                 ui.color_edit_button_srgb(&mut s.sparkles.color);
             });
+            palette_row(ui, &mut s.sparkles.palette);
+            ui.add(
+                egui::Slider::new(&mut s.sparkles.momentum, 0.0..=1.0)
+                    .text("Cursor momentum"),
+            );
+            ui.add(egui::Slider::new(&mut s.sparkles.drag, 0.0..=10.0).text("Air drag"));
+            ui.add(
+                egui::Slider::new(&mut s.sparkles.streak_secs, 0.0..=0.5)
+                    .text("Motion streak")
+                    .suffix(" s"),
+            );
+            ui.add(
+                egui::Slider::new(&mut s.sparkles.child_rate, 0.0..=60.0)
+                    .text("Child sparks per second"),
+            );
+            if s.sparkles.child_rate > 0.0 {
+                ui.add(
+                    egui::Slider::new(&mut s.sparkles.child_size, 0.2..=1.0)
+                        .text("Child size"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut s.sparkles.max_generations, 1..=4)
+                        .text("Generations"),
+                );
+            }
         }
     });
 }

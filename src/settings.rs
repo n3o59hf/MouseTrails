@@ -97,26 +97,61 @@ impl Default for BubbleCfg {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// What sparkles look like. Stars are the classic four-point twinkle; dots
+/// are soft round glows.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SparkShape {
+    #[default]
+    Star,
+    Dot,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SparkleCfg {
     pub enabled: bool,
+    pub shape: SparkShape,
     pub rate: f32,
     pub size: f32,
     pub gravity: f32,
     pub lifetime: f32,
     pub color: [u8; 3],
+    /// Colors cycled per particle. Empty falls back to `color`.
+    pub palette: Vec<[u8; 3]>,
+    /// Fraction of cursor velocity inherited at spawn (0..1).
+    pub momentum: f32,
+    /// Exponential velocity decay per second.
+    pub drag: f32,
+    /// Motion streak length in seconds (0 = off): a fading line drawn from
+    /// the particle back along its velocity.
+    pub streak_secs: f32,
+    /// Children spawned per second by each living spark (bengal-fire style).
+    pub child_rate: f32,
+    /// Size of child sparks relative to their parent.
+    pub child_size: f32,
+    /// Max generations: 1 = sparks never emit children, 3 = up to
+    /// grandchildren.
+    pub max_generations: u32,
 }
 
 impl Default for SparkleCfg {
     fn default() -> Self {
         Self {
             enabled: true,
+            shape: SparkShape::Star,
             rate: 40.0,
             size: 4.0,
             gravity: -30.0,
             lifetime: 0.9,
             color: [255, 212, 64],
+            palette: Vec::new(),
+            momentum: 0.25,
+            drag: 1.6,
+            streak_secs: 0.0,
+            child_rate: 0.0,
+            child_size: 0.55,
+            max_generations: 1,
         }
     }
 }
