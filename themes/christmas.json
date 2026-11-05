@@ -1,0 +1,55 @@
+{
+  "name": "Christmas",
+  "description": "A candy-striped trail, spinning ornament balls and golden bengal-fire sparks.",
+  "bounds": {
+    "bubbles.size": [8.0, 64.0],
+    "sparkles.size": [2.0, 12.0]
+  },
+  "trail": {
+    "enabled": true,
+    "style": "striped",
+    "length_secs": 0.6,
+    "width": 10.0,
+    "hue_speed": 1.0,
+    "color": [226, 48, 55],
+    "palette": [[226, 48, 55], [64, 180, 90]],
+    "stripe_len": 16.0
+  },
+  "bubbles": {
+    "enabled": true,
+    "shape": "ornament",
+    "rate": 6.0,
+    "size": 15.0,
+    "buoyancy": -50.0,
+    "lifetime": 2.6,
+    "wobble": 6.0,
+    "palette": [[210, 40, 50], [235, 180, 60], [60, 90, 200], [60, 170, 85]],
+    "momentum": 0.3,
+    "drag": 6.0,
+    "spin": 1.0
+  },
+  "sparkles": {
+    "enabled": true,
+    "shape": "star",
+    "rate": 30.0,
+    "size": 6.0,
+    "gravity": 90.0,
+    "lifetime": 1.2,
+    "color": [255, 200, 70],
+    "palette": [[255, 200, 70], [255, 235, 150], [255, 250, 230]],
+    "momentum": 0.25,
+    "drag": 1.4,
+    "streak_secs": 0.12,
+    "child_rate": 22.0,
+    "child_size": 0.55,
+    "max_generations": 3
+  },
+  "ripples": {
+    "enabled": true,
+    "rings": 2,
+    "speed": 450.0,
+    "lifetime": 0.6,
+    "width": 3.0,
+    "color": [255, 210, 120]
+  }
+}

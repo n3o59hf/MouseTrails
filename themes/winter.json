@@ -1,0 +1,55 @@
+{
+  "name": "Winter",
+  "description": "A soft white trail with pink and blue halos, slowly drifting snowflakes and pale sparkles.",
+  "bounds": {
+    "bubbles.size": [6.0, 60.0],
+    "sparkles.size": [1.5, 10.0]
+  },
+  "trail": {
+    "enabled": true,
+    "style": "soft",
+    "length_secs": 0.7,
+    "width": 9.0,
+    "hue_speed": 1.0,
+    "color": [240, 244, 255],
+    "palette": [[248, 250, 255], [255, 170, 200], [160, 190, 255]],
+    "stripe_len": 14.0
+  },
+  "bubbles": {
+    "enabled": true,
+    "shape": "snowflake",
+    "rate": 7.0,
+    "size": 13.0,
+    "buoyancy": -120.0,
+    "lifetime": 4.0,
+    "wobble": 18.0,
+    "palette": [[250, 252, 255], [210, 228, 255], [255, 214, 235]],
+    "momentum": 0.05,
+    "drag": 2.5,
+    "spin": 0.6
+  },
+  "sparkles": {
+    "enabled": true,
+    "shape": "dot",
+    "rate": 26.0,
+    "size": 3.5,
+    "gravity": -12.0,
+    "lifetime": 1.1,
+    "color": [240, 240, 255],
+    "palette": [[250, 250, 255], [255, 190, 225], [200, 170, 255]],
+    "momentum": 0.15,
+    "drag": 1.8,
+    "streak_secs": 0.0,
+    "child_rate": 0.0,
+    "child_size": 0.55,
+    "max_generations": 1
+  },
+  "ripples": {
+    "enabled": true,
+    "rings": 2,
+    "speed": 450.0,
+    "lifetime": 0.7,
+    "width": 3.0,
+    "color": [190, 215, 255]
+  }
+}

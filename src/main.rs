@@ -1,10 +1,11 @@
 #![windows_subsystem = "windows"]
 
 mod effects;
+mod expr;
 mod overlay;
 mod settings;
 mod store;
-mod expr;
+mod themes;
 mod updater;
 mod settings_ui;
 mod startup;
@@ -96,15 +97,16 @@ fn main() {
     let app_cfg = store.load_app();
 
     // The active profile may not exist yet (fresh install, or a theme whose
-    // profile hasn't been materialized): fall back to defaults and write
-    // them out so the file is editable from the start.
+    // profile hasn't been materialized): build it from the theme definition
+    // (themed sections over factory defaults) and write it out so the file
+    // is editable from the start.
     let profile = app_cfg
         .profiles
         .get(&app_cfg.theme)
         .cloned()
         .unwrap_or_else(|| store::DEFAULT_PROFILE.to_string());
     let effects = store.load_profile(&app_cfg.theme, &profile).unwrap_or_else(|| {
-        let d = store::EffectSettings::default();
+        let d = themes::materialize_profile(&store, &app_cfg.theme);
         store.save_profile(&app_cfg.theme, &profile, &d);
         d
     });
