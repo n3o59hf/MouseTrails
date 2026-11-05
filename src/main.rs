@@ -5,6 +5,7 @@ mod expr;
 mod overlay;
 mod settings;
 mod store;
+mod preview;
 mod themes;
 mod updater;
 mod settings_ui;

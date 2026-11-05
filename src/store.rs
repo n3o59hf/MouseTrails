@@ -144,6 +144,10 @@ impl Store {
         Self { base: base.into() }
     }
 
+    pub fn base(&self) -> &Path {
+        &self.base
+    }
+
     fn app_path(&self) -> PathBuf {
         self.base.join("config.json")
     }
@@ -343,14 +347,18 @@ pub struct SharedSettings {
 }
 
 impl SharedSettings {
+    /// Name of the profile active for `theme` ("default" unless recorded).
+    pub fn active_profile(&self, theme: &str) -> String {
+        let app = self.app.read().unwrap();
+        active_profile_in(&app, theme)
+    }
+
     /// Persist the current effect settings into the active theme's active
     /// profile file.
     pub fn save_effects(&self) {
         let (theme, profile) = {
             let app = self.app.read().unwrap();
-            let profile =
-                app.profiles.get(&app.theme).cloned().unwrap_or_else(|| DEFAULT_PROFILE.into());
-            (app.theme.clone(), profile)
+            (app.theme.clone(), active_profile_in(&app, &app.theme))
         };
         let es = self.effects.read().unwrap().clone();
         self.store.save_profile(&theme, &profile, &es);
@@ -365,6 +373,11 @@ impl SharedSettings {
         app.tray_hint_shown = true;
         self.store.save_app(&app);
     }
+}
+
+/// The profile selected for `theme` in `app` ("default" unless recorded).
+fn active_profile_in(app: &AppConfig, theme: &str) -> String {
+    app.profiles.get(theme).cloned().unwrap_or_else(|| DEFAULT_PROFILE.into())
 }
 
 #[cfg(test)]
