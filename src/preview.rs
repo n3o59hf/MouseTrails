@@ -42,6 +42,17 @@ impl ThemePreview {
         }
     }
 
+    /// Restart the animation from the beginning (parameter change). The last
+    /// rendered frame stays on screen until the next step overwrites it.
+    pub fn reset(&mut self) {
+        self.effects = Effects::new();
+        self.t = 0.0;
+        let (w, h) = (self.pixmap.width() as f32, self.pixmap.height() as f32);
+        self.mouse = (w * 0.5, h * 0.5);
+        self.vel = (0.0, 0.0);
+        self.next_click = 2.0;
+    }
+
     /// Advance one fixed step, resolving the theme's expressions against the
     /// synthetic cursor state, and re-render.
     pub fn step(&mut self, exprs: &FrameExprs) {

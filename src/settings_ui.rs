@@ -190,10 +190,16 @@ struct PreviewCard {
     sim: ThemePreview,
     exprs: FrameExprs,
     texture: Option<egui::TextureHandle>,
+    /// Sim frames played; the preview freezes at PREVIEW_FRAMES and replays
+    /// when the theme's parameters change.
+    played: u32,
 }
 
 const PREVIEW_W: u32 = 132;
 const PREVIEW_H: u32 = 74;
+/// ~3.7 sim-seconds at the fixed 30 fps step: trail fully grown, particles
+/// mid-life, first click blast happened — a lively freeze frame.
+const PREVIEW_FRAMES: u32 = 110;
 
 /// All theme ids: built-ins first, then any custom theme folders on disk.
 fn theme_ids(shared: &SharedSettings) -> Vec<String> {
@@ -238,6 +244,7 @@ fn build_cards(shared: &SharedSettings) -> (Vec<PreviewCard>, Option<ThemeDef>) 
             sim: ThemePreview::new(PREVIEW_W, PREVIEW_H),
             exprs: FrameExprs::build(&es),
             texture: None,
+            played: 0,
         });
     }
     (cards, active_def)
@@ -440,7 +447,10 @@ impl eframe::App for SettingsApp {
         // the message channel (slowly) while hidden. (egui 0.28's viewport
         // info has no visible flag, so we track the hide/show paths.)
         let visible = self.window_visible;
-        ctx.request_repaint_after(std::time::Duration::from_millis(if visible { 33 } else { 150 }));
+        let any_playing = cards.iter().any(|c| c.played < PREVIEW_FRAMES);
+        ctx.request_repaint_after(std::time::Duration::from_millis(
+            if visible && any_playing { 33 } else { 150 },
+        ));
 
         if *cards_dirty {
             let (c, d) = build_cards(shared);
@@ -448,15 +458,22 @@ impl eframe::App for SettingsApp {
             *active_def = d;
             *cards_dirty = false;
         }
-        // Live-follow: re-resolve the active card whenever tweaks land.
+        // Live-follow: re-resolve the active card and replay its animation
+        // whenever tweaks land.
         if s != *saved {
             if let Some(card) = cards.iter_mut().find(|c| c.id == app.theme) {
                 card.exprs = FrameExprs::build(&s);
+                card.sim.reset();
+                card.played = 0;
             }
         }
         if visible {
             for card in cards.iter_mut() {
+                if card.played >= PREVIEW_FRAMES {
+                    continue; // frozen
+                }
                 card.sim.step(&card.exprs);
+                card.played += 1;
                 if let Some(img) = card.sim.image().cloned() {
                     match &mut card.texture {
                         Some(t) => t.set(img, egui::TextureOptions::LINEAR),
@@ -662,6 +679,13 @@ fn themes_group(
             };
             let stroke =
                 if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
+            // Explicit colors: the default weak gray is unreadable on the
+            // selection-blue card fill.
+            let (name_color, desc_color) = if selected {
+                (egui::Color32::WHITE, egui::Color32::from_gray(215))
+            } else {
+                (ui.visuals().text_color(), ui.visuals().text_color())
+            };
             let inner = egui::Frame::none()
                 .fill(fill)
                 .stroke(stroke)
@@ -680,16 +704,24 @@ fn themes_group(
                         }
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
-                                ui.strong(&card.name);
+                                ui.label(
+                                    egui::RichText::new(&card.name)
+                                        .strong()
+                                        .color(name_color),
+                                );
                                 if selected {
                                     ui.label(
-                                        egui::RichText::new("active").small().strong(),
+                                        egui::RichText::new("active")
+                                            .small()
+                                            .strong()
+                                            .color(name_color),
                                     );
                                 } else if !card.builtin {
                                     ui.label(egui::RichText::new("custom").small().weak());
                                 }
                             });
-                            ui.label(egui::RichText::new(&card.desc).small().weak());
+                            // Body-size description (small was hard to read).
+                            ui.label(egui::RichText::new(&card.desc).color(desc_color));
                         });
                     });
                 });
