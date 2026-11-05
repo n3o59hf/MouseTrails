@@ -101,9 +101,11 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         cards_dirty: false,
         active_def,
         theme_err: None,
-        new_profile_name: String::new(),
-        new_profile_base: "default".to_string(),
-        new_theme_name: String::new(),
+        dialog_open: false,
+        dialog_name: String::new(),
+        dialog_source: None,
+        dialog_preset_mode: false,
+        dialog_preset_name: String::new(),
         window_visible: true,
     };
 
@@ -177,12 +179,24 @@ struct SettingsApp {
     active_def: Option<ThemeDef>,
     /// Error from the last profile/preset action, shown until it clears.
     theme_err: Option<String>,
-    new_profile_name: String,
-    /// Base preset picked for the next new profile.
-    new_profile_base: String,
-    new_theme_name: String,
+    /// The create-profile dialog state.
+    dialog_open: bool,
+    dialog_name: String,
+    dialog_source: Option<DialogSource>,
+    /// Inline "new preset" form inside the dialog.
+    dialog_preset_mode: bool,
+    dialog_preset_name: String,
     /// Tracked hide/show state of the window (drives preview animation).
     window_visible: bool,
+}
+
+/// What a new profile starts from, chosen in the create dialog.
+#[derive(Clone, Debug, PartialEq)]
+enum DialogSource {
+    /// Start from a preset's themed values over the current settings.
+    Preset(String),
+    /// Exact copy of an existing profile.
+    Duplicate(String, String),
 }
 
 struct PreviewCard {
@@ -269,11 +283,12 @@ enum Action {
     SwitchProfile(String, String),
     /// Create a profile under `base` preset and switch to it.
     NewProfile(String, String),
+    /// Copy an existing profile under its own preset and switch to it.
+    DuplicateProfile(String, String, String),
     DeleteProfile(String, String),
     /// Create a custom preset from the current one, with a default profile.
-    CreateCustom(String),
-    /// Delete a custom preset folder (must have no profiles left).
-    DeleteTheme(String),
+    /// With `switch`, also switch to that preset's new profile.
+    CreateCustom(String, bool),
     OpenFolder,
 }
 
@@ -348,7 +363,22 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
             }
             Ok(())
         }
-        Action::CreateCustom(name) => {
+        Action::DuplicateProfile(src_theme, src_profile, name) => {
+            let id = store::sanitize_id(&name)
+                .ok_or_else(|| "Profile name is empty or reserved.".to_string())?;
+            if shared.store.profile_exists(&src_theme, &id) {
+                return Err(format!("A profile named \u{201C}{}\u{201D} already exists.", id));
+            }
+            let es = shared.store.load_profile(&src_theme, &src_profile).ok_or_else(|| {
+                format!(
+                    "Profile \u{201C}{}\u{201D} no longer exists.",
+                    src_profile
+                )
+            })?;
+            shared.store.save_profile(&src_theme, &id, &es);
+            perform_action(shared, Action::SwitchProfile(src_theme, id))
+        }
+        Action::CreateCustom(name, switch) => {
             let display = name.trim().to_string();
             let id = store::sanitize_id(&name)
                 .ok_or_else(|| "Preset name is empty or reserved.".to_string())?;
@@ -364,21 +394,9 @@ fn perform_action(shared: &SharedSettings, action: Action) -> Result<(), String>
             let current = shared.effects.read().unwrap().clone();
             let es = themes::apply_def(&def, &current);
             shared.store.save_profile(&id, store::DEFAULT_PROFILE, &es);
-            perform_action(shared, Action::SwitchProfile(id, store::DEFAULT_PROFILE.into()))
-        }
-        Action::DeleteTheme(id) => {
-            if themes::builtin(&id).is_some() {
-                return Err("Built-in presets can't be deleted.".to_string());
+            if switch {
+                perform_action(shared, Action::SwitchProfile(id, store::DEFAULT_PROFILE.into()))?;
             }
-            if !shared.store.list_profiles(&id).is_empty() {
-                return Err("Delete the preset's profiles first.".to_string());
-            }
-            if !shared.store.delete_theme(&id) {
-                return Err(format!("Could not delete preset \u{201C}{}\u{201D}.", id));
-            }
-            let mut app = shared.app.write().unwrap();
-            app.profiles.remove(&id);
-            shared.store.save_app(&app);
             Ok(())
         }
         Action::OpenFolder => {
@@ -428,9 +446,11 @@ impl eframe::App for SettingsApp {
             cards_dirty,
             active_def,
             theme_err,
-            new_profile_name,
-            new_profile_base,
-            new_theme_name,
+            dialog_open,
+            dialog_name,
+            dialog_source,
+            dialog_preset_mode,
+            dialog_preset_name,
             saved,
             saved_app,
             startup,
@@ -562,13 +582,10 @@ impl eframe::App for SettingsApp {
             egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
                 profiles_group(
                     ui,
-                    shared,
                     &app,
                     cards,
                     theme_err,
-                    new_profile_name,
-                    new_profile_base,
-                    new_theme_name,
+                    dialog_open,
                     &mut action,
                 );
                 ui.add_space(6.0);
@@ -616,6 +633,34 @@ impl eframe::App for SettingsApp {
                 });
             });
         });
+
+        // The create-profile popup floats above the settings window.
+        if *dialog_open {
+            // The local flag is egui's close binding; the body asks for
+            // closure by return value (it can't touch the flag the Window
+            // holds a mutable borrow of).
+            let mut local_open = true;
+            let mut close_requested = false;
+            egui::Window::new("New profile")
+                .open(&mut local_open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    close_requested = dialog_body(
+                        ui,
+                        shared,
+                        cards,
+                        dialog_name,
+                        dialog_source,
+                        dialog_preset_mode,
+                        dialog_preset_name,
+                        &mut action,
+                    );
+                });
+            if close_requested || !local_open {
+                *dialog_open = false;
+            }
+        }
 
         if fps != app.render_fps {
             app.render_fps = fps;
@@ -668,110 +713,49 @@ impl eframe::App for SettingsApp {
 #[allow(clippy::too_many_arguments)]
 fn profiles_group(
     ui: &mut egui::Ui,
-    shared: &SharedSettings,
     app: &AppConfig,
     cards: &[PreviewCard],
     theme_err: &mut Option<String>,
-    new_profile_name: &mut String,
-    new_profile_base: &mut String,
-    new_theme_name: &mut String,
+    dialog_open: &mut bool,
     action: &mut Option<Action>,
 ) {
     ui.group(|ui| {
-        ui.label(egui::RichText::new("Profiles").strong());
-        for card in cards {
-            let selected =
-                app.theme == card.theme && active_profile_in(app, &card.theme) == card.profile;
-            let fill = if selected {
-                ui.visuals().selection.bg_fill
-            } else {
-                ui.visuals().faint_bg_color
-            };
-            let stroke =
-                if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
-            // Explicit colors: the default weak gray is unreadable on the
-            // selection-blue card fill.
-            let (name_color, desc_color) = if selected {
-                (egui::Color32::WHITE, egui::Color32::from_gray(215))
-            } else {
-                (ui.visuals().text_color(), ui.visuals().text_color())
-            };
-            let inner = egui::Frame::none()
-                .fill(fill)
-                .stroke(stroke)
-                .rounding(6.0)
-                .inner_margin(6.0)
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        if let Some(tex) = &card.texture {
-                            ui.add(egui::Image::new((
-                                tex.id(),
-                                egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32),
-                            )));
-                        } else {
-                            ui.add_space(PREVIEW_W as f32 + 2.0);
-                        }
-                        ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&card.label)
-                                        .strong()
-                                        .color(name_color),
-                                );
-                                if selected {
-                                    ui.label(
-                                        egui::RichText::new("active")
-                                            .small()
-                                            .strong()
-                                            .color(name_color),
-                                    );
-                                }
-                            });
-                            // Body-size preset tag (small was hard to read).
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "preset: {}",
-                                    card.theme
-                                ))
-                                .color(desc_color),
-                            );
-                        });
-                    });
-                });
-            let resp = ui.interact(
-                inner.response.rect,
-                egui::Id::new(("profile-card", &card.theme, &card.profile)),
-                egui::Sense::click(),
-            );
-            if resp.clicked() && !selected {
-                *action =
-                    Some(Action::SwitchProfile(card.theme.clone(), card.profile.clone()));
-            }
-            ui.add_space(2.0);
-        }
-
-        // New profile: name + base preset picker.
-        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label("New:");
-            ui.text_edit_singleline(new_profile_name);
-            let presets = theme_ids(shared);
-            egui::ComboBox::from_id_source("base_preset")
-                .selected_text(new_profile_base.clone())
-                .show_ui(ui, |ui| {
-                    for preset in &presets {
-                        ui.selectable_value(new_profile_base, preset.clone(), preset);
-                    }
-                });
-            if ui.button("Create profile").clicked() {
-                *action = Some(Action::NewProfile(
-                    new_profile_base.clone(),
-                    new_profile_name.clone(),
-                ));
-                new_profile_name.clear();
-            }
+            ui.label(egui::RichText::new("Profiles").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new("pick one, or + to create").small().weak(),
+                );
+            });
         });
+
+        // Gallery: wrapping grid of profile tiles plus the "+" tile.
+        let tile_w = PREVIEW_W as f32 + 16.0;
+        let cols = ((ui.available_width() + 10.0) / (tile_w + 10.0))
+            .floor()
+            .max(1.0) as usize;
+        egui::Grid::new("profile_gallery")
+            .spacing([10.0, 10.0])
+            .num_columns(cols)
+            .show(ui, |ui| {
+                for card in cards {
+                    let selected = app.theme == card.theme
+                        && active_profile_in(app, &card.theme) == card.profile;
+                    let resp = gallery_card(ui, card, selected);
+                    if resp.clicked() && !selected {
+                        *action = Some(Action::SwitchProfile(
+                            card.theme.clone(),
+                            card.profile.clone(),
+                        ));
+                    }
+                }
+                let plus = plus_tile(ui);
+                if plus.clicked() {
+                    *dialog_open = true;
+                }
+            });
+
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             let active = active_profile_in(app, &app.theme);
             if ui.button("Delete profile").clicked() {
@@ -781,27 +765,222 @@ fn profiles_group(
                 *action = Some(Action::OpenFolder);
             }
         });
-
-        // Custom preset management: presets are the hidden starting sets;
-        // this is the only place they surface.
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.label("New preset:");
-            ui.text_edit_singleline(new_theme_name);
-            if ui.button("Create from current").clicked() {
-                *action = Some(Action::CreateCustom(new_theme_name.clone()));
-                new_theme_name.clear();
-            }
-            if themes::builtin(&app.theme).is_none()
-                && ui.button("Delete this preset").clicked()
-            {
-                *action = Some(Action::DeleteTheme(app.theme.clone()));
-            }
-        });
         if let Some(err) = &*theme_err {
             ui.colored_label(egui::Color32::RED, err.clone());
         }
     });
+}
+
+/// One gallery tile: preview image on top, profile label below. Returns the
+/// click response for the whole tile.
+fn gallery_card(ui: &mut egui::Ui, card: &PreviewCard, selected: bool) -> egui::Response {
+    let fill =
+        if selected { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color };
+    let stroke = if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
+    let (name_color, tag_color) = if selected {
+        (egui::Color32::WHITE, egui::Color32::from_gray(215))
+    } else {
+        (ui.visuals().text_color(), ui.visuals().text_color())
+    };
+    let inner = egui::Frame::none()
+        .fill(fill)
+        .stroke(stroke)
+        .rounding(6.0)
+        .inner_margin(6.0)
+        .show(ui, |ui| {
+            ui.set_min_width(PREVIEW_W as f32 + 4.0);
+            ui.vertical(|ui| {
+                if let Some(tex) = &card.texture {
+                    ui.add(egui::Image::new((
+                        tex.id(),
+                        egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32),
+                    )));
+                } else {
+                    ui.set_min_size(egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32));
+                }
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(&card.label).strong().color(name_color));
+                ui.label(
+                    egui::RichText::new(format!("preset: {}", card.theme))
+                        .small()
+                        .color(tag_color),
+                );
+            });
+        });
+    ui.interact(
+        inner.response.rect,
+        egui::Id::new(("profile-card", &card.theme, &card.profile)),
+        egui::Sense::click(),
+    )
+}
+
+/// The "+" tile that opens the create-profile dialog.
+fn plus_tile(ui: &mut egui::Ui) -> egui::Response {
+    let inner = egui::Frame::none()
+        .fill(ui.visuals().faint_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .rounding(6.0)
+        .inner_margin(6.0)
+        .show(ui, |ui| {
+            ui.set_min_width(PREVIEW_W as f32 + 4.0);
+            ui.set_min_height(PREVIEW_H as f32 + 34.0);
+            ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("+").size(26.0));
+                    ui.label(egui::RichText::new("New profile").small());
+                });
+            });
+        });
+    ui.interact(
+        inner.response.rect,
+        egui::Id::new("profile-plus-tile"),
+        egui::Sense::click(),
+    )
+}
+
+/// Body of the create-profile popup: name, source tiles (duplicate any
+/// profile, start from any preset, or create a new preset inline).
+#[allow(clippy::too_many_arguments)]
+fn dialog_body(
+    ui: &mut egui::Ui,
+    shared: &SharedSettings,
+    cards: &[PreviewCard],
+    name: &mut String,
+    source: &mut Option<DialogSource>,
+    preset_mode: &mut bool,
+    preset_name: &mut String,
+    action: &mut Option<Action>,
+) -> bool {
+    ui.label("Name");
+    ui.text_edit_singleline(name);
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Start from").strong());
+
+    let tile = |ui: &mut egui::Ui, selected: bool, title: &str, sub: &str| -> egui::Response {
+        let fill = if selected {
+            ui.visuals().selection.bg_fill
+        } else {
+            ui.visuals().faint_bg_color
+        };
+        let stroke =
+            if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
+        let inner = egui::Frame::none()
+            .fill(fill)
+            .stroke(stroke)
+            .rounding(6.0)
+            .inner_margin(6.0)
+            .show(ui, |ui| {
+                ui.set_min_size(egui::vec2(120.0, 44.0));
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new(title).strong());
+                    ui.label(egui::RichText::new(sub).small().weak());
+                });
+            });
+        ui.interact(
+            inner.response.rect,
+            egui::Id::new(("source-tile", title, sub)),
+            egui::Sense::click(),
+        )
+    };
+
+    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+        ui.label(egui::RichText::new("Duplicate existing").small().weak());
+        let cols = 3;
+        egui::Grid::new("dup_grid").spacing([8.0, 8.0]).num_columns(cols).show(ui, |ui| {
+            let mut placed = 0;
+            for card in cards {
+                let selected =
+                    matches!(source, Some(DialogSource::Duplicate(t, p))
+                        if *t == card.theme && *p == card.profile);
+                let resp = tile(
+                    ui,
+                    selected,
+                    &card.profile,
+                    &format!("duplicate · {}", card.theme),
+                );
+                if resp.clicked() {
+                    *source =
+                        Some(DialogSource::Duplicate(card.theme.clone(), card.profile.clone()));
+                }
+                placed += 1;
+                if placed % cols == 0 {
+                    ui.end_row();
+                }
+            }
+            if placed % cols != 0 {
+                ui.end_row();
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Presets").small().weak());
+        egui::Grid::new("preset_grid").spacing([8.0, 8.0]).num_columns(cols).show(ui, |ui| {
+            let mut placed = 0;
+            for theme in theme_ids(shared) {
+                let selected = matches!(source, Some(DialogSource::Preset(t)) if *t == theme);
+                let resp = tile(ui, selected, &theme, "preset");
+                if resp.clicked() {
+                    *source = Some(DialogSource::Preset(theme.clone()));
+                }
+                placed += 1;
+                if placed % cols == 0 {
+                    ui.end_row();
+                }
+            }
+            // "+" tile: create a new preset inline.
+            let resp = tile(ui, *preset_mode, "+", "new preset");
+            if resp.clicked() {
+                *preset_mode = !*preset_mode;
+            }
+            placed += 1;
+            if placed % cols != 0 {
+                ui.end_row();
+            }
+        });
+        if *preset_mode {
+            ui.horizontal(|ui| {
+                ui.text_edit_singleline(preset_name);
+                if ui.button("Create preset").clicked() {
+                    // Created from the current preset's definition; it then
+                    // appears among the source tiles above.
+                    *action = Some(Action::CreateCustom(preset_name.clone(), false));
+                    preset_name.clear();
+                    *preset_mode = false;
+                }
+            });
+        }
+    });
+
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        let ready = !name.trim().is_empty() && source.is_some();
+        if ui
+            .add_enabled(ready, egui::Button::new("Create"))
+            .clicked()
+        {
+            match source.clone() {
+                Some(DialogSource::Preset(base)) => {
+                    *action = Some(Action::NewProfile(base, name.clone()));
+                }
+                Some(DialogSource::Duplicate(theme, profile)) => {
+                    *action = Some(Action::DuplicateProfile(theme, profile, name.clone()));
+                }
+                None => {}
+            }
+            name.clear();
+            *source = None;
+            *preset_mode = false;
+            return true;
+        }
+        if ui.button("Cancel").clicked() {
+            name.clear();
+            *source = None;
+            *preset_mode = false;
+            return true;
+        }
+        false
+    });
+    false
 }
 
 

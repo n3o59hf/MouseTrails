@@ -101,10 +101,13 @@ themes\<id>\
   <name>.json              named profiles
 ```
 
-Profiles are the selector: every card is one profile, and clicking it
-applies that profile's complete settings. Creating a profile picks a
-**preset** as the starting point — the preset's themed sections overlay
-your current settings, unthemed sections carry over. "Reset to defaults"
+Profiles are the selector: a gallery of tiles, each with a live preview.
+Clicking a tile applies that profile's complete settings, and the **+**
+tile opens the create dialog — duplicate any existing profile, start from
+any preset, or create a new preset on the spot. A new profile's preset
+**starting point** overlays its themed sections on your current settings;
+unthemed sections carry over. Every preset's primary profile is called
+`main`. "Reset to defaults"
 restores the profile's base preset values for themed sections and factory
 defaults for the rest.
 

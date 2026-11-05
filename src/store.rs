@@ -21,8 +21,9 @@ use crate::settings::{BubbleCfg, RippleCfg, SparkleCfg, TrailCfg};
 
 pub const CONFIG_VERSION: u32 = 2;
 
-/// The profile selected for a theme when nothing else is recorded.
-pub const DEFAULT_PROFILE: &str = "default";
+/// The profile selected for a theme when nothing else is recorded, and the
+/// name of every preset's primary profile.
+pub const DEFAULT_PROFILE: &str = "main";
 
 /// Root config: which theme is active, which profile each theme uses, and
 /// process-wide knobs that don't describe how the effects look.
@@ -228,8 +229,9 @@ impl Store {
             .unwrap_or(false)
     }
 
-    /// One-time conversion of the pre-themes flat config. Idempotent: an
-    /// already-v2 root config is left untouched.
+    /// One-time conversions, run on every load (each step idempotent):
+    /// legacy flat config -> v2 layout, then the primary profile rename
+    /// "default" -> "main".
     fn migrate(&self) {
         let app_path = self.app_path();
         let text = match std::fs::read_to_string(&app_path) {
@@ -241,6 +243,19 @@ impl Store {
             }
         };
         if Self::is_migrated(&text) {
+            self.rename_default_profiles();
+            if let Ok(mut app) = serde_json::from_str::<AppConfig>(&text) {
+                let mut changed = false;
+                for v in app.profiles.values_mut() {
+                    if v == "default" {
+                        *v = "main".into();
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.save_app(&app);
+                }
+            }
             return; // already the new format
         }
         // Legacy (or corrupt) document: back it up, then split it.
@@ -263,6 +278,29 @@ impl Store {
             render_fps: legacy.render_fps,
             tray_hint_shown: legacy.tray_hint_shown,
         });
+    }
+
+    /// Rename every preset's `default.json` profile to `main.json`. The
+    /// primary profile used to share its name with the default preset,
+    /// which read confusingly once profiles became the selector. Never
+    /// clobbers an existing `main.json`.
+    fn rename_default_profiles(&self) {
+        let mut ids: Vec<String> = ["default", "winter", "christmas"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for id in self.list_themes() {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        for id in ids {
+            let old = self.profile_path(&id, "default");
+            let new = self.profile_path(&id, "main");
+            if old.exists() && !new.exists() {
+                let _ = std::fs::rename(&old, &new);
+            }
+        }
     }
 
     // -- effect profiles ----------------------------------------------------
@@ -473,7 +511,7 @@ mod tests {
         assert_eq!(app.render_fps, 90);
         assert!(app.tray_hint_shown);
 
-        let es = store.load_profile("default", "default").unwrap();
+        let es = store.load_profile("default", "main").unwrap();
         assert_eq!(es.trail.style, crate::settings::TrailStyle::Neon);
         assert_eq!(es.trail.width, NumOrExpr::Num(12.0));
         assert_eq!(es.sparkles.color, [1, 2, 3]);
@@ -495,7 +533,7 @@ mod tests {
 
         let app = store.load_app();
         assert_eq!(app, AppConfig::default());
-        let es = store.load_profile("default", "default").unwrap();
+        let es = store.load_profile("default", "main").unwrap();
         assert_eq!(es, EffectSettings::default());
         let bak = std::fs::read_to_string(dir.join("config.json.bak")).unwrap();
         assert_eq!(bak, "{ not json !!!");
@@ -560,6 +598,28 @@ mod tests {
         assert!(store.delete_theme("frost"));
         assert!(store.list_themes().is_empty());
         assert!(store.load_theme_def("frost").is_none());
+    }
+
+    #[test]
+    fn default_profiles_rename_to_main() {
+        let (store, dir) = temp_store("rename-main");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A v2 config pointing at a "default" profile, plus the old file.
+        let v2 = r#"{ "version": 2, "theme": "winter", "profiles": {"winter": "default"},
+                      "render_fps": 60, "tray_hint_shown": false }"#;
+        std::fs::write(dir.join("config.json"), v2).unwrap();
+        store.save_profile("winter", "default", &EffectSettings::default());
+        assert!(store.profile_path("winter", "default").exists());
+
+        let app = store.load_app();
+        assert!(store.profile_path("winter", "main").exists(), "file renamed");
+        assert!(!store.profile_path("winter", "default").exists(), "old name gone");
+        assert_eq!(app.profiles.get("winter").map(|s| s.as_str()), Some("main"));
+
+        // Idempotent: a second load keeps everything in place.
+        let app2 = store.load_app();
+        assert_eq!(app2.profiles.get("winter").map(|s| s.as_str()), Some("main"));
+        assert!(store.profile_path("winter", "main").exists());
     }
 
     #[test]

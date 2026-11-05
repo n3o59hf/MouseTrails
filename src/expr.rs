@@ -174,6 +174,7 @@ pub struct FrameExprs {
 
 impl FrameExprs {
     /// True when any field carries a parseable expression.
+    #[allow(dead_code)] // exercised by tests; handy for diagnostics
     pub fn any(&self) -> bool {
         !self.exprs.is_empty()
     }
