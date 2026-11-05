@@ -209,7 +209,7 @@ impl Default for RippleCfg {
             width: 3.0,
             color: [140, 230, 255],
             palette: Vec::new(),
-            wobble: 0.06,
+            wobble: 0.0,
         }
     }
 }

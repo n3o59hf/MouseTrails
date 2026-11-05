@@ -1949,7 +1949,9 @@ mod tests {
         let cfg: &'static EffectSettings = Box::leak(Box::new(s));
 
         let mut sp = Sparkles::default();
-        for frame in 0..150 {
+        // 240 frames: grandchildren need two staggered lifetimes to appear,
+        // and the shared test RNG jitters spawn counts.
+        for frame in 0..240 {
             sp.update(&ctx_at_cfg(0.5 + frame as f32 / 60.0, (100.0, 100.0), (300.0, 0.0), 30.0, false, cfg));
         }
         assert!(!sp.list.is_empty());

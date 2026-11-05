@@ -476,6 +476,10 @@ impl eframe::App for SettingsApp {
             }
         }
 
+        // Snapshot for the footer's reset handler (the panels capture
+        // disjoint fields).
+        let active_def_snapshot = active_def.clone();
+
         let mut startup_v = *startup;
         let mut toggle_startup: Option<bool> = None;
         let mut close = false;
@@ -505,9 +509,13 @@ impl eframe::App for SettingsApp {
                         close = true;
                     }
                     if ui.button("Reset to defaults").clicked() {
-                        // App-level state (theme, FPS, hints) is untouched;
-                        // only the effect settings of this profile reset.
-                        s = EffectSettings::default();
+                        // Restore the active theme's own values for its
+                        // themed sections; unthemed sections go back to
+                        // factory defaults. App-level state (theme choice,
+                        // FPS, hints) and other themes' profiles are
+                        // untouched.
+                        let def = active_def_snapshot.clone().unwrap_or_default();
+                        s = themes::apply_def(&def, &EffectSettings::default());
                     }
                 });
             });
