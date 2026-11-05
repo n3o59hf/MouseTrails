@@ -217,8 +217,8 @@ struct PreviewCard {
     played: u32,
 }
 
-const PREVIEW_W: u32 = 132;
-const PREVIEW_H: u32 = 74;
+const PREVIEW_W: u32 = 264;
+const PREVIEW_H: u32 = 148;
 /// Fixed column count for the profile gallery.
 const GALLERY_COLS: usize = 3;
 /// ~3.7 sim-seconds at the fixed 30 fps step: trail fully grown, particles
@@ -441,6 +441,13 @@ impl eframe::App for SettingsApp {
 
         let mut s = self.shared.effects.read().unwrap().clone();
         let mut app = self.shared.app.read().unwrap().clone();
+
+        // egui pins sliders to spacing.slider_width (100 px default) — it
+        // never stretches on its own. Drive it from the window width so a
+        // wider window means longer sliders: reserve room for the value box
+        // and the label to the right of the rail.
+        let rail_width = (ctx.screen_rect().width() - 210.0).max(100.0);
+        ctx.style_mut(|style| style.spacing.slider_width = rail_width);
 
         // Split the struct so the egui closures below can capture disjoint
         // fields without borrowing all of self.
@@ -666,7 +673,7 @@ impl eframe::App for SettingsApp {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        if ui.small_button("\u{2715}").clicked() {
+                                        if ui.small_button("\u{00D7}").clicked() {
                                             close_requested = true;
                                         }
                                     },
@@ -760,6 +767,11 @@ fn profiles_group(
         });
 
         // Gallery: fixed-count grid of profile tiles plus the "+" tile.
+        // Tiles stretch to fill the row: each cell gets an equal share of
+        // the group width.
+        let cell_w = ((ui.available_width() - 10.0 * (GALLERY_COLS as f32 - 1.0) - 12.0)
+            / GALLERY_COLS as f32)
+            .max(150.0);
         egui::Grid::new("profile_gallery")
             .spacing([10.0, 10.0])
             .num_columns(GALLERY_COLS)
@@ -770,7 +782,7 @@ fn profiles_group(
                 for card in cards {
                     let selected = app.theme == card.theme
                         && active_profile_in(app, &card.theme) == card.profile;
-                    let resp = gallery_card(ui, card, selected);
+                    let resp = gallery_card(ui, card, selected, cell_w);
                     if resp.clicked() && !selected {
                         *action = Some(Action::SwitchProfile(
                             card.theme.clone(),
@@ -782,7 +794,7 @@ fn profiles_group(
                         ui.end_row();
                     }
                 }
-                let plus = plus_tile(ui);
+                let plus = plus_tile(ui, cell_w);
                 if plus.clicked() {
                     *dialog_open = true;
                 }
@@ -810,7 +822,14 @@ fn profiles_group(
 
 /// One gallery tile: preview image on top, profile label below. Returns the
 /// click response for the whole tile.
-fn gallery_card(ui: &mut egui::Ui, card: &PreviewCard, selected: bool) -> egui::Response {
+fn gallery_card(
+    ui: &mut egui::Ui,
+    card: &PreviewCard,
+    selected: bool,
+    cell_w: f32,
+) -> egui::Response {
+    let img_w = cell_w - 8.0;
+    let img_h = img_w * PREVIEW_H as f32 / PREVIEW_W as f32;
     let fill =
         if selected { ui.visuals().selection.bg_fill } else { ui.visuals().faint_bg_color };
     let stroke = if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
@@ -825,15 +844,12 @@ fn gallery_card(ui: &mut egui::Ui, card: &PreviewCard, selected: bool) -> egui::
         .rounding(6.0)
         .inner_margin(6.0)
         .show(ui, |ui| {
-            ui.set_min_width(PREVIEW_W as f32 + 4.0);
+            ui.set_min_width(cell_w);
             ui.vertical(|ui| {
                 if let Some(tex) = &card.texture {
-                    ui.add(egui::Image::new((
-                        tex.id(),
-                        egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32),
-                    )));
+                    ui.add(egui::Image::new((tex.id(), egui::vec2(img_w, img_h))));
                 } else {
-                    ui.set_min_size(egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32));
+                    ui.set_min_size(egui::vec2(img_w, img_h));
                 }
                 ui.add_space(2.0);
                 ui.label(egui::RichText::new(&card.label).strong().color(name_color));
@@ -852,15 +868,16 @@ fn gallery_card(ui: &mut egui::Ui, card: &PreviewCard, selected: bool) -> egui::
 }
 
 /// The "+" tile that opens the create-profile dialog.
-fn plus_tile(ui: &mut egui::Ui) -> egui::Response {
+fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
+    let img_h = (cell_w - 8.0) * PREVIEW_H as f32 / PREVIEW_W as f32;
     let inner = egui::Frame::none()
         .fill(ui.visuals().faint_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
         .rounding(6.0)
         .inner_margin(6.0)
         .show(ui, |ui| {
-            ui.set_min_width(PREVIEW_W as f32 + 4.0);
-            ui.set_min_height(PREVIEW_H as f32 + 34.0);
+            ui.set_min_width(cell_w);
+            ui.set_min_height(img_h + 38.0);
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
                     ui.label(egui::RichText::new("+").size(26.0));
@@ -925,8 +942,11 @@ fn dialog_body(
                 selected: bool,
                 title: &str,
                 sub: &str,
-                tex: Option<&egui::TextureHandle>|
+                tex: Option<&egui::TextureHandle>,
+                tile_w: f32|
      -> egui::Response {
+        let img_w = tile_w - 8.0;
+        let img_h = img_w * PREVIEW_H as f32 / PREVIEW_W as f32;
         let fill = if selected {
             ui.visuals().selection.bg_fill
         } else {
@@ -940,15 +960,12 @@ fn dialog_body(
             .rounding(6.0)
             .inner_margin(6.0)
             .show(ui, |ui| {
-                ui.set_min_width(PREVIEW_W as f32 + 4.0);
+                ui.set_min_width(tile_w);
                 ui.vertical(|ui| {
                     if let Some(tex) = tex {
-                        ui.add(egui::Image::new((
-                            tex.id(),
-                            egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32),
-                        )));
+                        ui.add(egui::Image::new((tex.id(), egui::vec2(img_w, img_h))));
                     } else {
-                        ui.set_min_size(egui::vec2(PREVIEW_W as f32, PREVIEW_H as f32));
+                        ui.set_min_size(egui::vec2(img_w, img_h));
                     }
                     ui.add_space(2.0);
                     ui.label(egui::RichText::new(title).strong());
@@ -962,6 +979,9 @@ fn dialog_body(
         )
     };
 
+    let tile_w = ((ui.available_width() - 10.0 * (GALLERY_COLS as f32 - 1.0))
+        / GALLERY_COLS as f32)
+        .max(120.0);
     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
         egui::Grid::new("source_grid")
             .spacing([10.0, 10.0])
@@ -977,7 +997,7 @@ fn dialog_body(
                         _ => false,
                     };
                     let tex = card.and_then(|c| c.texture.as_ref());
-                    let resp = tile(ui, selected, title, sub, tex);
+                    let resp = tile(ui, selected, title, sub, tex, tile_w);
                     if resp.clicked() {
                         *source = Some(src.clone());
                     }
@@ -987,7 +1007,7 @@ fn dialog_body(
                     }
                 }
                 // "+" tile: create a new preset inline.
-                let resp = tile(ui, *preset_mode, "+", "new preset", None);
+                let resp = tile(ui, *preset_mode, "+", "new preset", None, tile_w);
                 if resp.clicked() {
                     *preset_mode = !*preset_mode;
                 }
@@ -1127,7 +1147,7 @@ fn palette_row(ui: &mut egui::Ui, palette: &mut Vec<[u8; 3]>) {
         let mut remove: Option<usize> = None;
         for (i, c) in palette.iter_mut().enumerate() {
             ui.color_edit_button_srgb(c);
-            if ui.small_button("\u{2715}").clicked() {
+            if ui.small_button("\u{00D7}").clicked() {
                 remove = Some(i);
             }
         }
