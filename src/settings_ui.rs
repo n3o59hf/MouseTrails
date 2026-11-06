@@ -967,10 +967,10 @@ impl eframe::App for SettingsApp {
                         .weak(),
                     );
                     ui.add(
-                        egui::Slider::new(&mut s.limits.bubbles, 10..=400).text("Max bubbles"),
+                        egui::Slider::new(&mut s.limits.bubbles, 10..=300).text("Max bubbles"),
                     );
                     ui.add(
-                        egui::Slider::new(&mut s.limits.sparkles, 20..=1000)
+                        egui::Slider::new(&mut s.limits.sparkles, 20..=3000)
                             .text("Max sparkles"),
                     );
                     ui.add(
