@@ -831,6 +831,7 @@ impl eframe::App for SettingsApp {
                             ui,
                             shared,
                             cards,
+                            preset_previews,
                             theme_err,
                             preset_dialog_name,
                             preset_dialog_source,
@@ -1157,8 +1158,10 @@ fn dialog_body(
                 tile_w: f32,
                 accent: bool|
      -> egui::Response {
-        let img_w = tile_w - 12.0;
-        let img_h = img_w * PREVIEW_ASPECT;
+        let (img_w, img_h) = match tex {
+            Some(_) => (tile_w, tile_w * PREVIEW_ASPECT),
+            None => (tile_w - 12.0, (tile_w - 12.0) * PREVIEW_ASPECT),
+        };
         let fill = if selected {
             ui.visuals().selection.bg_fill
         } else {
@@ -1275,6 +1278,7 @@ fn preset_dialog_body(
     ui: &mut egui::Ui,
     shared: &SharedSettings,
     cards: &[PreviewCard],
+    preset_previews: &[PresetPreview],
     theme_err: &mut Option<String>,
     name: &mut String,
     source: &mut Option<PresetSource>,
@@ -1293,8 +1297,10 @@ fn preset_dialog_body(
                 tile_w: f32,
                 accent: bool|
      -> egui::Response {
-        let img_w = tile_w - 12.0;
-        let img_h = img_w * PREVIEW_ASPECT;
+        let (img_w, img_h) = match tex {
+            Some(_) => (tile_w, tile_w * PREVIEW_ASPECT),
+            None => (tile_w - 12.0, (tile_w - 12.0) * PREVIEW_ASPECT),
+        };
         let fill = if selected {
             ui.visuals().selection.bg_fill
         } else {
@@ -1334,7 +1340,8 @@ fn preset_dialog_body(
     };
 
     // Unified sources: empty slate, every preset, every profile.
-    let mut sources: Vec<(PresetSource, String, String, Option<&PreviewCard>)> = Vec::new();
+    let mut sources: Vec<(PresetSource, String, String, Option<&egui::TextureHandle>)> =
+        Vec::new();
     sources.push((
         PresetSource::Empty,
         "Empty".to_string(),
@@ -1345,14 +1352,15 @@ fn preset_dialog_body(
         let title = themes::load_def(&shared.store, &theme)
             .map(|d| d.name)
             .unwrap_or_else(|| theme.clone());
-        let card = cards
+        let tex = preset_previews
             .iter()
-            .find(|c| c.theme == theme && c.profile == store::DEFAULT_PROFILE);
+            .find(|pp| pp.theme == theme)
+            .and_then(|pp| pp.texture.as_ref());
         sources.push((
             PresetSource::CopyPreset(theme.clone()),
             title,
             format!("copy of preset: {}", theme),
-            card,
+            tex,
         ));
     }
     for theme in theme_ids(shared) {
@@ -1362,12 +1370,15 @@ fn preset_dialog_body(
             } else {
                 format!("{} \u{00b7} {}", theme, profile)
             };
-            let card = cards.iter().find(|c| c.theme == theme && c.profile == profile);
+            let tex = cards
+                .iter()
+                .find(|c| c.theme == theme && c.profile == profile)
+                .and_then(|c| c.texture.as_ref());
             sources.push((
                 PresetSource::CopyProfile(theme.clone(), profile.clone()),
                 label,
                 "copy of profile".to_string(),
-                card,
+                tex,
             ));
         }
     }
@@ -1389,7 +1400,7 @@ fn preset_dialog_body(
                         }
                         _ => false,
                     };
-                    let tex = card.and_then(|c| c.texture.as_ref());
+                    let tex = *card;
                     let resp = tile(ui, selected, title, sub, tex, tile_w, title == "+");
                     if resp.clicked() {
                         *source = Some(src.clone());
