@@ -267,11 +267,14 @@ struct DialogPreviews {
     /// by the next step.
     cell_w: f32,
     items: Vec<DialogPreview>,
+    /// Whether the dialog was open last frame — drives the clear-on-close
+    /// so every open rebuilds from current definitions and profile files.
+    open_prev: bool,
 }
 
 impl DialogPreviews {
     fn build(items: Vec<DialogPreview>) -> Self {
-        Self { cell_w: 0.0, items }
+        Self { cell_w: 0.0, items, open_prev: false }
     }
 
     fn get(&self, key: &str) -> Option<&DialogPreview> {
@@ -767,12 +770,27 @@ impl eframe::App for SettingsApp {
             preset_dialog.items.clear();
         }
         // Each dialog's previews live while that dialog is open, rendered at
-        // the dialog's own measured tile size.
-        if *dialog_open && profile_dialog.items.is_empty() {
-            *profile_dialog = build_profile_dialog_previews(shared, &app, &s);
+        // the dialog's own measured tile size. Clearing on close (not just
+        // when empty) makes every open a rebuild: a hand-edited theme.json —
+        // the new-preset flow opens Explorer for exactly that — must not
+        // show stale definition previews on reopen.
+        if *dialog_open {
+            if profile_dialog.items.is_empty() {
+                *profile_dialog = build_profile_dialog_previews(shared, &app, &s);
+            }
+            profile_dialog.open_prev = true;
+        } else if profile_dialog.open_prev {
+            profile_dialog.items.clear();
+            profile_dialog.open_prev = false;
         }
-        if *preset_dialog_open && preset_dialog.items.is_empty() {
-            *preset_dialog = build_preset_dialog_previews(shared);
+        if *preset_dialog_open {
+            if preset_dialog.items.is_empty() {
+                *preset_dialog = build_preset_dialog_previews(shared);
+            }
+            preset_dialog.open_prev = true;
+        } else if preset_dialog.open_prev {
+            preset_dialog.items.clear();
+            preset_dialog.open_prev = false;
         }
         if visible {
             let want_w = ((*preview_cell_w - 12.0).round() as u32).max(96);
