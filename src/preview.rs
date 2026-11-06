@@ -80,7 +80,7 @@ impl ThemePreview {
 
         self.effects.push_trail_samples(vec![(self.mouse.0, self.mouse.1, self.t)]);
 
-        let es = exprs.resolve(self.t, speed, moved > 0.5);
+        let es = exprs.resolve(self.t as f64, speed, moved > 0.5);
         let ctx = Ctx {
             dt: FIXED_DT,
             now: self.t,

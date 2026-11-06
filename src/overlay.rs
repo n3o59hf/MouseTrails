@@ -421,7 +421,10 @@ struct App {
     frame_exprs: crate::expr::FrameExprs,
     last_raw: Option<EffectSettings>,
     last_tick: Instant,
-    clock: f32,
+    /// Frame clock (s since start). f64 so the expression variable `t`
+    /// keeps sub-frame precision after days of uptime; the effect
+    /// simulation consumes it as f32, where particle ages stay small.
+    clock: f64,
     timer_period: u32,
     metric_checks: u32,
     /// Current refresh rate of the primary monitor (Hz), 0 when unknown.
@@ -674,7 +677,7 @@ impl App {
         // One monotonic clock shared with the cursor sampler — accumulating
         // clamped dt here would drift trail aging on any tick slower than
         // 100ms.
-        self.clock = self.t0.elapsed().as_secs_f32();
+        self.clock = self.t0.elapsed().as_secs_f64();
 
         let raw = self.shared.effects.read().unwrap().clone();
         let render_fps = self.shared.app.read().unwrap().render_fps;
@@ -767,13 +770,13 @@ impl App {
             None => Vec::new(),
         };
         if samples.is_empty() && moved > 0.5 {
-            samples.push((mx, my, self.clock));
+            samples.push((mx, my, self.clock as f32));
         }
         self.effects.push_trail_samples(samples);
 
         let ctx = effects::Ctx {
             dt,
-            now: self.clock,
+            now: self.clock as f32,
             mouse: self.mouse,
             vel,
             clicked,
@@ -807,7 +810,7 @@ impl App {
             clear_rows(buf, self.w as usize, x0 as usize, x1 as usize, y0 as usize, y1 as usize);
             let mut pm = PixmapMut::from_bytes(buf, self.w as u32, self.h as u32)
                 .expect("pixmap over DIB");
-            self.effects.render(&mut pm, &cfg, self.clock);
+            self.effects.render(&mut pm, &cfg, self.clock as f32);
             drop(pm);
         }
 

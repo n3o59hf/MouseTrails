@@ -131,7 +131,7 @@ fn fnn(f: impl Fn(&[f64]) -> f64 + Clone + Send + Sync + 'static) -> Function<De
 /// The expression function set, bound into a fresh frame context. evalexpr
 /// ships no built-in functions, so everything documented for theme authors
 /// is registered here.
-fn frame_context(t: f32, speed: f32, moving: bool) -> HashMapContext<DefaultNumericTypes> {
+fn frame_context(t: f64, speed: f32, moving: bool) -> HashMapContext<DefaultNumericTypes> {
     let mut ctx = HashMapContext::new();
     let _ = ctx.set_value("t".into(), Value::Float(t as f64));
     let _ = ctx.set_value("speed".into(), Value::Float(speed as f64));
@@ -210,7 +210,11 @@ impl FrameExprs {
 
     /// Evaluate all expressions once for this frame and substitute the
     /// results. Constant-only configs short-circuit to a plain clone.
-    pub fn resolve(&self, t: f32, speed: f32, moving: bool) -> EffectSettings {
+    /// `t` is f64: an always-on overlay accumulates days of uptime, and a
+    /// f32 clock eventually loses sub-frame precision, making `sin(t)`
+    /// step. The effect simulation keeps its own f32 `now` (particle ages
+    /// stay small, so it never degrades).
+    pub fn resolve(&self, t: f64, speed: f32, moving: bool) -> EffectSettings {
         if self.exprs.is_empty() {
             return self.base.clone();
         }
@@ -257,7 +261,7 @@ mod tests {
         let fe = FrameExprs::build(&with_buoyancy(NumOrExpr::Expr("-20 + sin(t) * 10".into())));
         assert!(fe.any());
         let at_0 = fe.resolve(0.0, 0.0, false);
-        let at_peak = fe.resolve(std::f32::consts::FRAC_PI_2, 0.0, false);
+        let at_peak = fe.resolve(std::f32::consts::FRAC_PI_2 as f64, 0.0, false);
         assert!((at_0.bubbles.buoyancy.value() - (-20.0)).abs() < 0.01);
         assert!((at_peak.bubbles.buoyancy.value() - (-10.0)).abs() < 0.01);
     }
