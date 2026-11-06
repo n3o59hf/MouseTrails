@@ -992,16 +992,24 @@ fn render_soap_bubble(pm: &mut PixmapMut, b: &Bubble, k: f32) {
 
 /// One six-arm snowflake as a single batched path: a spoke per arm plus two
 /// side-branch pairs, with the variant seed tweaking branch angles and
-/// placement so flakes differ.
+/// placement so flakes differ. Bit 0 adds a third, near-tip branch pair —
+/// dense "fern" flakes vs sparse stars — so all eight seeds draw distinct
+/// silhouettes. The extra pair tops out at ~1.09 r from the center (arm tip
+/// + half stroke), well inside the bubbles' 1.3 r dirty-rect budget.
 fn snowflake_path(pb: &mut PathBuilder, x: f32, y: f32, r: f32, rot: f32, variant: u32) {
     let branch_angle = 0.55 + ((variant >> 1) & 1) as f32 * 0.3;
     let inner = 0.45 + ((variant >> 2) & 1) as f32 * 0.12;
+    let pairs: &[(f32, f32)] = if variant & 1 == 0 {
+        &[(inner, 0.30), (0.72, 0.22)]
+    } else {
+        &[(inner, 0.30), (0.72, 0.22), (0.86, 0.18)]
+    };
     for arm in 0..6 {
         let a = rot + arm as f32 * std::f32::consts::TAU / 6.0;
         let (ca, sa) = (a.cos(), a.sin());
         pb.move_to(x, y);
         pb.line_to(x + ca * r, y + sa * r);
-        for (t, len) in [(inner, 0.30f32), (0.72, 0.22f32)] {
+        for &(t, len) in pairs {
             let bx = x + ca * r * t;
             let by = y + sa * r * t;
             for s in [-1.0f32, 1.0] {
@@ -1950,6 +1958,48 @@ mod tests {
             );
             assert!(flake.variant < SNOWFLAKE_VARIANTS);
         }
+    }
+
+    #[test]
+    fn snowflake_variants_draw_eight_distinct_silhouettes() {
+        // Every seed must produce its own raster: bit 0 adds a near-tip
+        // branch pair, bit 1 widens the branch angle, bit 2 moves the inner
+        // pair outward. Rendering is deterministic, so identical lit-pixel
+        // sets would mean two seeds share one silhouette.
+        let mut silhouettes = std::collections::HashSet::new();
+        for variant in 0..SNOWFLAKE_VARIANTS {
+            let b = Bubble {
+                x: 60.0,
+                y: 60.0,
+                vx: 0.0,
+                vy: 0.0,
+                r: 42.0,
+                color: [1.0, 1.0, 1.0],
+                born: 0.0,
+                life: 1.0,
+                wob_phase: 0.0,
+                wob_freq: 0.0,
+                rot: 0.0,
+                spin: 0.0,
+                variant,
+            };
+            let mut pm = tiny_skia::Pixmap::new(120, 120).unwrap();
+            render_snowflake(&mut pm.as_mut(), &b, 1.0);
+            let lit: Vec<(u32, u32)> = pm
+                .data()
+                .chunks_exact(4)
+                .enumerate()
+                .filter(|(_, p)| p[3] > 0)
+                .map(|(i, _)| (i as u32 % 120, i as u32 / 120))
+                .collect();
+            assert!(!lit.is_empty(), "variant {} must draw pixels", variant);
+            silhouettes.insert(lit);
+        }
+        assert_eq!(
+            silhouettes.len(),
+            SNOWFLAKE_VARIANTS as usize,
+            "all eight snowflake seeds must draw distinct silhouettes"
+        );
     }
 
     #[test]
