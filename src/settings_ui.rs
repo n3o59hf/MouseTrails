@@ -1061,9 +1061,26 @@ if fps != app.render_fps {
                     | Action::CreateCustom(..)
                     | Action::DeleteProfile(..)
             );
+            // Which dialog a successful create closes; failures leave the
+            // dialog open with the error beside its buttons.
+            let from_profile_dialog = matches!(
+                &a,
+                Action::NewProfile(..) | Action::DuplicateProfile(..)
+            );
+            let from_preset_dialog = matches!(&a, Action::CreateCustom(..));
             match perform_action(shared, a) {
                 Ok(refresh) => {
                     *theme_err = None;
+                    if from_profile_dialog {
+                        *dialog_open = false;
+                        dialog_name.clear();
+                        *dialog_source = None;
+                    }
+                    if from_preset_dialog {
+                        *preset_dialog_open = false;
+                        preset_dialog_name.clear();
+                        *preset_dialog_source = None;
+                    }
                     // Targeted refresh: re-read the named profiles into
                     // their existing cards without restarting the rest.
                     for (theme, profile) in &refresh {
@@ -1323,9 +1340,9 @@ fn dialog_body(
                     }
                     None => {}
                 }
-                name.clear();
-                *source = None;
-                close = true;
+                // Closing waits for the action to succeed: a failed create
+                // (duplicate or reserved name) keeps the dialog open with
+                // the error beside the buttons, name and source intact.
             }
             if ui.button("Cancel").clicked() {
                 name.clear();
@@ -1484,9 +1501,8 @@ fn preset_dialog_body(
                 if let Some(src) = source.clone() {
                     *action = Some(Action::CreateCustom(name.clone(), src));
                 }
-                name.clear();
-                *source = None;
-                close = true;
+                // Closing waits for the action to succeed (see the create
+                // dialog): a failed create keeps this window open.
             }
             if ui.button("Cancel").clicked() {
                 name.clear();
