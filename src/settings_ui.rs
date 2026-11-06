@@ -1408,11 +1408,21 @@ fn dialog_body(
                                 k.strip_prefix("preset:") == Some(a) => true,
                             (Some(DialogSource::Duplicate(t1, p1)), k) if
                                 k == format!("profile:{}/{}", t1, p1) => true,
+                            // The "current" tile is the active profile —
+                            // highlight it while it is the duplicate source.
+                            (Some(DialogSource::Duplicate(t1, p1)), "current") if
+                                t1 == &app.theme
+                                    && p1 == &active_profile_in(app, &app.theme) => true,
                             _ => false,
                         };
                         let resp = tile(ui, selected, item);
                         if resp.clicked() {
-                            if let Some(preset) = item.key.strip_prefix("preset:") {
+                            if item.key == "current" {
+                                *source = Some(DialogSource::Duplicate(
+                                    app.theme.clone(),
+                                    active_profile_in(app, &app.theme),
+                                ));
+                            } else if let Some(preset) = item.key.strip_prefix("preset:") {
                                 *source = Some(DialogSource::Preset(preset.to_string()));
                             } else if let Some(pair) = item.key.strip_prefix("profile:") {
                                 if let Some((t, p)) = pair.split_once('/') {
