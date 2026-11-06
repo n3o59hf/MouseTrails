@@ -1074,9 +1074,39 @@ if fps != app.render_fps {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
+        // Any widget mutation lands in the shared state and on disk BEFORE
+        // deferred actions run: effect settings go to the active theme's
+        // profile file, app knobs to the root config. Writing back first is
+        // what keeps a same-frame tweak + profile switch honest — running
+        // it after the switch would fold old-profile edits into the new
+        // profile's file. The active card's preview replays with the new
+        // settings.
+        if s != *saved {
+            *shared.effects.write().unwrap() = s.clone();
+            shared.save_effects();
+            let active = active_profile_in(&app, &app.theme);
+            if let Some(card) = cards
+                .iter_mut()
+                .find(|c| c.theme == app.theme && c.profile == active)
+            {
+                card.exprs = FrameExprs::build(&s);
+                card.sim.reset();
+                card.played = 0;
+            }
+            // The create-profile window's "Current profile" tile follows
+            // live tweaks as well.
+            profile_dialog.replay("current", FrameExprs::build(&s));
+            *saved = s;
+        }
+        if app != *saved_app {
+            shared.store.save_app(&app);
+            *shared.app.write().unwrap() = app.clone();
+            *saved_app = app;
+        }
+
         // Theme/profile mutations run after the widget pass, then everything
-        // the write-back diff compares against is refreshed — otherwise this
-        // frame's stale snapshots would overwrite the switch.
+        // the write-back diff compares against is refreshed — otherwise the
+        // next frame's stale snapshots would overwrite the switch.
         if let Some(a) = action {
             let structural = matches!(
                 a,
@@ -1134,35 +1164,6 @@ if fps != app.render_fps {
             app = shared.app.read().unwrap().clone();
             *saved = s.clone();
             *saved_app = app.clone();
-        }
-
-        // Any widget mutation lands in the shared state and on disk: effect
-        // settings go to the active theme's profile file, app knobs to the
-        // root config. The active card's preview replays with the new
-        // settings (this is the only point where settings actually change —
-        // a same-frame save/update pair is invisible to a next-frame
-        // comparison).
-        if s != *saved {
-            *shared.effects.write().unwrap() = s.clone();
-            shared.save_effects();
-            let active = active_profile_in(&app, &app.theme);
-            if let Some(card) = cards
-                .iter_mut()
-                .find(|c| c.theme == app.theme && c.profile == active)
-            {
-                card.exprs = FrameExprs::build(&s);
-                card.sim.reset();
-                card.played = 0;
-            }
-            // The create-profile window's "Current profile" tile follows
-            // live tweaks as well.
-            profile_dialog.replay("current", FrameExprs::build(&s));
-            *saved = s;
-        }
-        if app != *saved_app {
-            shared.store.save_app(&app);
-            *shared.app.write().unwrap() = app.clone();
-            *saved_app = app;
         }
     }
 }
