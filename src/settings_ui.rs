@@ -776,6 +776,17 @@ impl eframe::App for SettingsApp {
                     }
                 }
             }
+            // Each dialog steps its own preview set at the size its widget
+            // pass measured last frame (the closures run later in update).
+            // Skipped until the first measurement lands.
+            if *dialog_open && profile_dialog.cell_w > 0.0 {
+                let w = ((profile_dialog.cell_w - 12.0).round() as u32).max(96);
+                profile_dialog.step(w, ctx);
+            }
+            if *preset_dialog_open && preset_dialog.cell_w > 0.0 {
+                let w = ((preset_dialog.cell_w - 12.0).round() as u32).max(96);
+                preset_dialog.step(w, ctx);
+            }
         }
 
         // Snapshot for the footer's reset handler (the panels capture
