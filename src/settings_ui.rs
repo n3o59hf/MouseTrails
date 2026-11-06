@@ -103,10 +103,12 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         theme_err: None,
         delete_arm: None,
         preview_cell_w: 190.0,
-        dialog_open: false,
+        preset_previews: Vec::new(),
+        // Debug builds open both dialogs for visual verification.
+        dialog_open: std::env::var("MOUSETRAILS_DEBUG").is_ok(),
         dialog_name: String::new(),
         dialog_source: None,
-        preset_dialog_open: false,
+        preset_dialog_open: std::env::var("MOUSETRAILS_DEBUG").is_ok(),
         preset_dialog_name: String::new(),
         preset_dialog_source: None,
         window_visible: true,
@@ -190,6 +192,9 @@ struct SettingsApp {
     /// Measured gallery cell width — previews re-render at exactly this
     /// size (updated by the widget pass, applied by the next step loop).
     preview_cell_w: f32,
+    /// Per-preset previews for the create dialog, rendered from preset
+    /// definitions rather than profiles. Rebuilt when the dialog opens.
+    preset_previews: Vec<PresetPreview>,
     /// The create-profile dialog state.
     dialog_open: bool,
     dialog_name: String,
@@ -220,6 +225,17 @@ enum PresetSource {
     CopyPreset(String),
     /// Snapshot of an existing profile: every section themed to its values.
     CopyProfile(String, String),
+}
+
+/// A preset's own preview, rendered from its definition materialized over
+/// factory defaults — independent of whether any profile of that preset
+/// currently exists.
+struct PresetPreview {
+    theme: String,
+    sim: ThemePreview,
+    exprs: FrameExprs,
+    texture: Option<egui::TextureHandle>,
+    played: u32,
 }
 
 struct PreviewCard {
@@ -265,6 +281,23 @@ fn theme_ids(shared: &SharedSettings) -> Vec<String> {
 /// profiles are the selector, so previews show the user's actual settings.
 /// Expensive-ish (file reads + parses), so it only runs when the theme set
 /// or profiles change.
+/// Build the per-preset previews from the definitions themselves.
+fn build_preset_previews(shared: &SharedSettings) -> Vec<PresetPreview> {
+    theme_ids(shared)
+        .into_iter()
+        .map(|theme| {
+            let es = themes::materialize_profile(&shared.store, &theme);
+            PresetPreview {
+                theme,
+                sim: ThemePreview::new(182, 102),
+                exprs: FrameExprs::build(&es),
+                texture: None,
+                played: 0,
+            }
+        })
+        .collect()
+}
+
 fn build_cards(shared: &SharedSettings) -> (Vec<PreviewCard>, Option<ThemeDef>) {
     let app = shared.app.read().unwrap();
     let mut cards = Vec::new();
@@ -526,6 +559,7 @@ impl eframe::App for SettingsApp {
             active_def,
             theme_err,
             preview_cell_w,
+            preset_previews,
             delete_arm,
             dialog_open,
             dialog_name,
@@ -554,10 +588,41 @@ impl eframe::App for SettingsApp {
             *cards = c;
             *active_def = d;
             *cards_dirty = false;
+            // Structural changes (created/deleted presets or profiles) also
+            // invalidate the preset previews; they rebuild on next open.
+            preset_previews.clear();
+        }
+        // Preset previews live while the create dialog is open; they render
+        // the preset definitions, so they work even when a preset has no
+        // profile on disk.
+        if *dialog_open && preset_previews.is_empty() {
+            *preset_previews = build_preset_previews(shared);
         }
         if visible {
             let want_w = ((*preview_cell_w - 12.0).round() as u32).max(96);
             let want_h = (want_w as f32 * PREVIEW_ASPECT).round() as u32;
+            for pp in preset_previews.iter_mut() {
+                if pp.sim.resize(want_w, want_h) {
+                    pp.played = 0;
+                }
+                if pp.played >= PREVIEW_FRAMES {
+                    continue; // frozen
+                }
+                pp.sim.step(&pp.exprs);
+                pp.played += 1;
+                if let Some(img) = pp.sim.image().cloned() {
+                    match &mut pp.texture {
+                        Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                        None => {
+                            pp.texture = Some(ctx.load_texture(
+                                format!("preset-preview-{}", pp.theme),
+                                img,
+                                egui::TextureOptions::LINEAR,
+                            ));
+                        }
+                    }
+                }
+            }
             for card in cards.iter_mut() {
                 // A size change invalidates the old texture — replay at the
                 // new size.
@@ -733,6 +798,7 @@ impl eframe::App for SettingsApp {
                             shared,
                             &app,
                             cards,
+                            preset_previews,
                             theme_err,
                             *preview_cell_w,
                             dialog_name,
@@ -1039,6 +1105,7 @@ fn dialog_body(
     shared: &SharedSettings,
     app: &AppConfig,
     cards: &[PreviewCard],
+    preset_previews: &[PresetPreview],
     theme_err: &mut Option<String>,
     tile_w: f32,
     name: &mut String,
@@ -1052,27 +1119,33 @@ fn dialog_body(
     ui.label(egui::RichText::new("Start from").strong());
 
     // Unified sources: the current profile first, then every preset, each
-    // with its live preview tile.
+    // with its live preview tile. The 4th element is the texture to show —
+    // profile tiles use their card's texture, preset tiles the preset's
+    // own definition-rendered preview.
     let active = active_profile_in(app, &app.theme);
-    let mut sources: Vec<(DialogSource, String, String, Option<&PreviewCard>)> = Vec::new();
+    let mut sources: Vec<(DialogSource, String, String, Option<&egui::TextureHandle>)> =
+        Vec::new();
     if let Some(card) = cards.iter().find(|c| c.theme == app.theme && c.profile == active) {
         sources.push((
             DialogSource::Duplicate(card.theme.clone(), card.profile.clone()),
             "Current profile".to_string(),
             format!("duplicate of {}", card.label),
-            Some(card),
+            card.texture.as_ref(),
         ));
     }
     for theme in theme_ids(shared) {
         let title = themes::load_def(&shared.store, &theme)
             .map(|d| d.name)
             .unwrap_or_else(|| theme.clone());
-        let card = cards.iter().find(|c| c.theme == theme && c.profile == store::DEFAULT_PROFILE);
+        let tex = preset_previews
+            .iter()
+            .find(|pp| pp.theme == theme)
+            .and_then(|pp| pp.texture.as_ref());
         sources.push((
             DialogSource::Preset(theme.clone()),
             title,
             format!("preset: {}", theme),
-            card,
+            tex,
         ));
     }
 
@@ -1140,7 +1213,7 @@ fn dialog_body(
                         }
                         _ => false,
                     };
-                    let tex = card.and_then(|c| c.texture.as_ref());
+                    let tex = *card;
                     let resp = tile(ui, selected, title, sub, tex, tile_w, false);
                     if resp.clicked() {
                         *source = Some(src.clone());
