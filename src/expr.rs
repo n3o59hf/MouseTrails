@@ -222,6 +222,11 @@ impl FrameExprs {
                 Ok(Value::Int(i)) => i as f32,
                 _ => field.default_value(),
             };
+            // NaN survives f32::clamp ("returns NaN if self is NaN") and
+            // would poison geometry, particle ages and dirty rects
+            // downstream (sqrt of a negative, 0/0 …) — fall back to the
+            // field default. ±inf is fine: clamp bounds it.
+            let v = if v.is_nan() { field.default_value() } else { v };
             field.set(&mut out, field.clamp(v));
         }
         out
@@ -310,6 +315,28 @@ mod tests {
         let fe = FrameExprs::build(&es);
         assert!(!fe.errors.is_empty());
         assert!(fe.exprs.is_empty());
+    }
+
+    #[test]
+    fn nan_expressions_fall_back_to_safe_values() {
+        // sqrt of a negative parses fine and evaluates to NaN, which
+        // f32::clamp would pass straight through into the effect geometry.
+        let mut es = EffectSettings::default();
+        es.bubbles.buoyancy = NumOrExpr::Expr("sqrt(t - 10)".into());
+        let fe = FrameExprs::build(&es);
+        let fallback = EffectSettings::default().bubbles.buoyancy.value();
+        assert_eq!(fe.resolve(0.0, 0.0, false).bubbles.buoyancy.value(), fallback);
+        // Once t passes 10 the expression is real again and takes over.
+        let at = fe.resolve(14.0, 0.0, false).bubbles.buoyancy.value();
+        assert!((at - 2.0).abs() < 0.01, "sqrt(4) = 2, got {}", at);
+    }
+
+    #[test]
+    fn infinite_expressions_clamp_to_the_field_range() {
+        let mut es = EffectSettings::default();
+        es.bubbles.buoyancy = NumOrExpr::Expr("1e308 * 10".into()); // f64 inf
+        let fe = FrameExprs::build(&es);
+        assert_eq!(fe.resolve(0.0, 0.0, false).bubbles.buoyancy.value(), 2000.0);
     }
 
     #[test]
