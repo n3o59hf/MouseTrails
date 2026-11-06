@@ -103,7 +103,8 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         theme_err: None,
         delete_arm: None,
         preview_cell_w: 190.0,
-        preset_previews: Vec::new(),
+        profile_dialog: DialogPreviews::build(Vec::new()),
+        preset_dialog: DialogPreviews::build(Vec::new()),
         // Debug builds open both dialogs for visual verification.
         dialog_open: std::env::var("MOUSETRAILS_DEBUG").is_ok(),
         dialog_name: String::new(),
@@ -194,7 +195,9 @@ struct SettingsApp {
     preview_cell_w: f32,
     /// Per-preset previews for the create dialog, rendered from preset
     /// definitions rather than profiles. Rebuilt when the dialog opens.
-    preset_previews: Vec<PresetPreview>,
+    /// Per-dialog preview sets, each sized to its own window.
+    profile_dialog: DialogPreviews,
+    preset_dialog: DialogPreviews,
     /// The create-profile dialog state.
     dialog_open: bool,
     dialog_name: String,
@@ -227,15 +230,86 @@ enum PresetSource {
     CopyProfile(String, String),
 }
 
-/// A preset's own preview, rendered from its definition materialized over
-/// factory defaults — independent of whether any profile of that preset
-/// currently exists.
-struct PresetPreview {
-    theme: String,
+/// One preview tile inside a dialog window.
+struct DialogPreview {
+    /// Stable identity within the dialog ("current", "preset:winter",
+    /// "profile:default/main").
+    key: String,
+    title: String,
+    sub: String,
     sim: ThemePreview,
     exprs: FrameExprs,
     texture: Option<egui::TextureHandle>,
     played: u32,
+}
+
+/// All previews backing one dialog window. Sized to that dialog's own tile
+/// measurement — deliberately independent of the main-window gallery and of
+/// the other dialog, so windows never inherit each other's sizing.
+struct DialogPreviews {
+    /// Measured tile width (outer), recorded by the widget pass and applied
+    /// by the next step.
+    cell_w: f32,
+    items: Vec<DialogPreview>,
+}
+
+impl DialogPreviews {
+    fn build(items: Vec<DialogPreview>) -> Self {
+        Self { cell_w: 0.0, items }
+    }
+
+    fn get(&self, key: &str) -> Option<&DialogPreview> {
+        self.items.iter().find(|i| i.key == key)
+    }
+
+    /// Re-read a profile from disk into its preview and replay it.
+    fn refresh_profile(&mut self, shared: &SharedSettings, theme: &str, profile: &str) {
+        let key = format!("profile:{}/{}", theme, profile);
+        if let Some(item) = self.items.iter_mut().find(|i| i.key == key) {
+            if let Some(es) = shared.store.load_profile(theme, profile) {
+                item.exprs = FrameExprs::build(&es);
+                item.sim.reset();
+                item.played = 0;
+            }
+        }
+    }
+
+    /// Swap an item's expressions and replay it (settings changed).
+    fn replay(&mut self, key: &str, exprs: FrameExprs) {
+        if let Some(item) = self.items.iter_mut().find(|i| i.key == key) {
+            item.exprs = exprs;
+            item.sim.reset();
+            item.played = 0;
+        }
+    }
+
+    /// Step every non-frozen preview at `want_w` px, uploading textures.
+    fn step(&mut self, want_w: u32, ctx: &egui::Context) {
+        let want_h = (want_w as f32 * PREVIEW_ASPECT).round() as u32;
+        for item in &mut self.items {
+            if item.sim.resize(want_w, want_h) {
+                // The old texture has the wrong dimensions — replay.
+                item.played = 0;
+            }
+            if item.played >= PREVIEW_FRAMES {
+                continue; // frozen
+            }
+            item.sim.step(&item.exprs);
+            item.played += 1;
+            if let Some(img) = item.sim.image().cloned() {
+                match &mut item.texture {
+                    Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                    None => {
+                        item.texture = Some(ctx.load_texture(
+                            format!("dlg-preview-{}", item.key),
+                            img,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct PreviewCard {
@@ -258,6 +332,8 @@ struct PreviewCard {
 /// size the layout gives them, keeping this ratio.
 const PREVIEW_ASPECT: f32 = 74.0 / 132.0;
 const TILE_SPACING: f32 = 10.0;
+/// Smallest allowed dialog tile width; dialog column counts adapt to it.
+const MIN_TILE_W: f32 = 160.0;
 /// Fixed column count of the profile gallery.
 const GALLERY_COLS: usize = 3;
 /// Column count of the create dialog's source grid.
@@ -281,21 +357,90 @@ fn theme_ids(shared: &SharedSettings) -> Vec<String> {
 /// profiles are the selector, so previews show the user's actual settings.
 /// Expensive-ish (file reads + parses), so it only runs when the theme set
 /// or profiles change.
-/// Build the per-preset previews from the definitions themselves.
-fn build_preset_previews(shared: &SharedSettings) -> Vec<PresetPreview> {
-    theme_ids(shared)
-        .into_iter()
-        .map(|theme| {
-            let es = themes::materialize_profile(&shared.store, &theme);
-            PresetPreview {
-                theme,
-                sim: ThemePreview::new(182, 102),
-                exprs: FrameExprs::build(&es),
-                texture: None,
-                played: 0,
-            }
-        })
-        .collect()
+fn dialog_preview(key: String, title: String, sub: String, es: &EffectSettings) -> DialogPreview {
+    DialogPreview {
+        key,
+        title,
+        sub,
+        sim: ThemePreview::new(182, 102),
+        exprs: FrameExprs::build(es),
+        texture: None,
+        played: 0,
+    }
+}
+
+/// Previews for the create-profile window: the current profile plus every
+/// preset (rendered from its definition over factory defaults).
+fn build_profile_dialog_previews(
+    shared: &SharedSettings,
+    app: &AppConfig,
+    active: &EffectSettings,
+) -> DialogPreviews {
+    let mut items = Vec::new();
+    let active_theme = app.theme.clone();
+    let active_profile = active_profile_in(app, &app.theme);
+    let label = if active_theme == "default" {
+        active_profile.clone()
+    } else {
+        format!("{} \u{00b7} {}", active_theme, active_profile)
+    };
+    items.push(dialog_preview(
+        "current".into(),
+        "Current profile".into(),
+        format!("duplicate of {}", label),
+        active,
+    ));
+    for theme in theme_ids(shared) {
+        let title = themes::load_def(&shared.store, &theme)
+            .map(|d| d.name)
+            .unwrap_or_else(|| theme.clone());
+        let es = themes::materialize_profile(&shared.store, &theme);
+        items.push(dialog_preview(
+            format!("preset:{}", theme),
+            title,
+            format!("preset: {}", theme),
+            &es,
+        ));
+    }
+    DialogPreviews::build(items)
+}
+
+/// Previews for the new-preset window: every preset (from its definition)
+/// and every profile (from its file), as snapshot sources.
+fn build_preset_dialog_previews(shared: &SharedSettings) -> DialogPreviews {
+    let mut items = Vec::new();
+    for theme in theme_ids(shared) {
+        let title = themes::load_def(&shared.store, &theme)
+            .map(|d| d.name)
+            .unwrap_or_else(|| theme.clone());
+        let es = themes::materialize_profile(&shared.store, &theme);
+        items.push(dialog_preview(
+            format!("preset:{}", theme),
+            title,
+            format!("copy of preset: {}", theme),
+            &es,
+        ));
+    }
+    for theme in theme_ids(shared) {
+        for profile in shared.store.list_profiles(&theme) {
+            let label = if theme == "default" {
+                profile.clone()
+            } else {
+                format!("{} \u{00b7} {}", theme, profile)
+            };
+            let es = shared
+                .store
+                .load_profile(&theme, &profile)
+                .unwrap_or_else(|| themes::materialize_profile(&shared.store, &theme));
+            items.push(dialog_preview(
+                format!("profile:{}/{}", theme, profile),
+                label,
+                "copy of profile".to_string(),
+                &es,
+            ));
+        }
+    }
+    DialogPreviews::build(items)
 }
 
 fn build_cards(shared: &SharedSettings) -> (Vec<PreviewCard>, Option<ThemeDef>) {
@@ -559,7 +704,8 @@ impl eframe::App for SettingsApp {
             active_def,
             theme_err,
             preview_cell_w,
-            preset_previews,
+            profile_dialog,
+            preset_dialog,
             delete_arm,
             dialog_open,
             dialog_name,
@@ -578,7 +724,9 @@ impl eframe::App for SettingsApp {
         // the message channel (slowly) while hidden. (egui 0.28's viewport
         // info has no visible flag, so we track the hide/show paths.)
         let visible = self.window_visible;
-        let any_playing = cards.iter().any(|c| c.played < PREVIEW_FRAMES);
+        let any_playing = cards.iter().any(|c| c.played < PREVIEW_FRAMES)
+            || profile_dialog.items.iter().any(|i| i.played < PREVIEW_FRAMES)
+            || preset_dialog.items.iter().any(|i| i.played < PREVIEW_FRAMES);
         ctx.request_repaint_after(std::time::Duration::from_millis(
             if visible && any_playing { 33 } else { 150 },
         ));
@@ -589,40 +737,21 @@ impl eframe::App for SettingsApp {
             *active_def = d;
             *cards_dirty = false;
             // Structural changes (created/deleted presets or profiles) also
-            // invalidate the preset previews; they rebuild on next open.
-            preset_previews.clear();
+            // invalidate the dialog previews; they rebuild on next open.
+            profile_dialog.items.clear();
+            preset_dialog.items.clear();
         }
-        // Preset previews live while the create dialog is open; they render
-        // the preset definitions, so they work even when a preset has no
-        // profile on disk.
-        if *dialog_open && preset_previews.is_empty() {
-            *preset_previews = build_preset_previews(shared);
+        // Each dialog's previews live while that dialog is open, rendered at
+        // the dialog's own measured tile size.
+        if *dialog_open && profile_dialog.items.is_empty() {
+            *profile_dialog = build_profile_dialog_previews(shared, &app, &s);
+        }
+        if *preset_dialog_open && preset_dialog.items.is_empty() {
+            *preset_dialog = build_preset_dialog_previews(shared);
         }
         if visible {
             let want_w = ((*preview_cell_w - 12.0).round() as u32).max(96);
             let want_h = (want_w as f32 * PREVIEW_ASPECT).round() as u32;
-            for pp in preset_previews.iter_mut() {
-                if pp.sim.resize(want_w, want_h) {
-                    pp.played = 0;
-                }
-                if pp.played >= PREVIEW_FRAMES {
-                    continue; // frozen
-                }
-                pp.sim.step(&pp.exprs);
-                pp.played += 1;
-                if let Some(img) = pp.sim.image().cloned() {
-                    match &mut pp.texture {
-                        Some(t) => t.set(img, egui::TextureOptions::LINEAR),
-                        None => {
-                            pp.texture = Some(ctx.load_texture(
-                                format!("preset-preview-{}", pp.theme),
-                                img,
-                                egui::TextureOptions::LINEAR,
-                            ));
-                        }
-                    }
-                }
-            }
             for card in cards.iter_mut() {
                 // A size change invalidates the old texture — replay at the
                 // new size.
@@ -797,8 +926,7 @@ impl eframe::App for SettingsApp {
                             vp_ctx,
                             shared,
                             &app,
-                            cards,
-                            preset_previews,
+                            profile_dialog,
                             theme_err,
                             dialog_name,
                             dialog_source,
@@ -829,8 +957,7 @@ impl eframe::App for SettingsApp {
                         close_requested |= preset_dialog_body(
                             vp_ctx,
                             shared,
-                            cards,
-                            preset_previews,
+                            preset_dialog,
                             theme_err,
                             preset_dialog_name,
                             preset_dialog_source,
@@ -892,6 +1019,11 @@ if fps != app.render_fps {
                             }
                         }
                     }
+                    // A switch changes which profile is "current": the
+                    // dialog's current-profile preview rebuilds with it.
+                    if !refresh.is_empty() {
+                        profile_dialog.items.clear();
+                    }
                     if structural {
                         *cards_dirty = true;
                     }
@@ -922,6 +1054,9 @@ if fps != app.render_fps {
                 card.sim.reset();
                 card.played = 0;
             }
+            // The create-profile window's "Current profile" tile follows
+            // live tweaks as well.
+            profile_dialog.replay("current", FrameExprs::build(&s));
             *saved = s;
         }
         if app != *saved_app {
@@ -1098,55 +1233,19 @@ fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
 /// Body of the create-profile window: a name field, then one unified list
 /// of sources with live previews — the current profile (duplicated), every
 /// preset — and a "+" tile that opens the new-preset window. Actions are
-/// pinned to the bottom; the tile grid fills the rest.
-#[allow(clippy::too_many_arguments)]
+/// pinned to the bottom; the tile grid fills the rest and adapts its column
+/// count to the window width.
 fn dialog_body(
     vp_ctx: &egui::Context,
     shared: &SharedSettings,
     app: &AppConfig,
-    cards: &[PreviewCard],
-    preset_previews: &[PresetPreview],
+    previews: &mut DialogPreviews,
     theme_err: &mut Option<String>,
     name: &mut String,
     source: &mut Option<DialogSource>,
     open_preset_dialog: &mut bool,
     action: &mut Option<Action>,
 ) -> bool {
-    // Unified sources: the current profile first, then every preset. Each
-    // entry carries its texture plus the native pixel size to display it at
-    // (1:1, never scaled).
-    let active = active_profile_in(app, &app.theme);
-    let mut sources: Vec<(
-        DialogSource,
-        String,
-        String,
-        Option<(&egui::TextureHandle, f32, f32)>,
-    )> = Vec::new();
-    if let Some(card) = cards.iter().find(|c| c.theme == app.theme && c.profile == active) {
-        let (w, h) = card.sim.pixel_size();
-        sources.push((
-            DialogSource::Duplicate(card.theme.clone(), card.profile.clone()),
-            "Current profile".to_string(),
-            format!("duplicate of {}", card.label),
-            card.texture.as_ref().map(|t| (t, w, h)),
-        ));
-    }
-    for theme in theme_ids(shared) {
-        let title = themes::load_def(&shared.store, &theme)
-            .map(|d| d.name)
-            .unwrap_or_else(|| theme.clone());
-        let tex = preset_previews.iter().find(|pp| pp.theme == theme).and_then(|pp| {
-            let (w, h) = pp.sim.pixel_size();
-            pp.texture.as_ref().map(|t| (t, w, h))
-        });
-        sources.push((
-            DialogSource::Preset(theme.clone()),
-            title,
-            format!("preset: {}", theme),
-            tex,
-        ));
-    }
-
     let mut close = false;
 
     // Actions pinned to the bottom of the window.
@@ -1188,12 +1287,20 @@ fn dialog_body(
         ui.label(egui::RichText::new("Start from").strong());
         ui.add_space(2.0);
 
+        // Columns adapt to the window width with a minimum tile size, so
+        // the grid always fits.
+        let avail = ui.available_width() - 8.0;
+        let cols = ((avail + TILE_SPACING) / (MIN_TILE_W + TILE_SPACING))
+            .floor()
+            .max(1.0) as usize;
+        let cell_w = (avail - TILE_SPACING * (cols as f32 - 1.0)) / cols as f32;
+        previews.cell_w = cell_w;
+
         let tile = |ui: &mut egui::Ui,
                     selected: bool,
-                    title: &str,
-                    sub: &str,
-                    tex: Option<(&egui::TextureHandle, f32, f32)>|
+                    item: &DialogPreview|
          -> egui::Response {
+            let (img_w, img_h) = item.sim.pixel_size();
             let fill = if selected {
                 ui.visuals().selection.bg_fill
             } else {
@@ -1207,21 +1314,26 @@ fn dialog_body(
                 .rounding(6.0)
                 .inner_margin(6.0)
                 .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
+                    ui.set_min_width(cell_w - 12.0);
                     ui.vertical(|ui| {
-                        if let Some((t, w, h)) = tex {
-                            ui.add(egui::Image::new((t.id(), egui::vec2(w, h))));
+                        if let Some(tex) = &item.texture {
+                            ui.add(egui::Image::new((
+                                tex.id(),
+                                egui::vec2(img_w, img_h),
+                            )));
                         } else {
-                            ui.set_min_size(egui::vec2(100.0, 100.0 * PREVIEW_ASPECT));
+                            ui.set_min_size(egui::vec2(img_w, img_h));
                         }
                         ui.add_space(2.0);
-                        if sub == "new preset" {
-                            ui.label(egui::RichText::new(title).strong().size(20.0));
+                        if item.key == "new-preset" {
+                            ui.label(
+                                egui::RichText::new(&item.title).strong().size(20.0),
+                            );
                         } else {
-                            ui.label(egui::RichText::new(title).strong());
+                            ui.label(egui::RichText::new(&item.title).strong());
                         }
                         ui.label(
-                            egui::RichText::new(sub)
+                            egui::RichText::new(&item.sub)
                                 .small()
                                 .color(egui::Color32::from_gray(200)),
                         );
@@ -1229,44 +1341,50 @@ fn dialog_body(
                 });
             ui.interact(
                 inner.response.rect,
-                egui::Id::new(("source-tile", title, sub)),
+                egui::Id::new(("source-tile", &item.key)),
                 egui::Sense::click(),
             )
         };
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let cell_w =
-                ((ui.available_width() - 2.0 * TILE_SPACING - 8.0) / DIALOG_COLS as f32)
-                    .max(120.0);
             egui::Grid::new("source_grid")
                 .spacing([TILE_SPACING, TILE_SPACING])
-                .num_columns(DIALOG_COLS)
+                .num_columns(cols)
                 .show(ui, |ui| {
                     let mut placed = 0;
-                    for (src, title, sub, tex) in &sources {
-                        let selected = match (source.as_ref().map(|x| x), src) {
-                            (Some(DialogSource::Preset(a)), DialogSource::Preset(b)) => a == b,
-                            (Some(DialogSource::Duplicate(t1, p1)), DialogSource::Duplicate(t2, p2)) => {
-                                t1 == t2 && p1 == p2
-                            }
+                    for item in &*previews.items {
+                        let selected = match (source.as_ref(), item.key.as_str()) {
+                            (Some(DialogSource::Preset(a)), k) if
+                                k.strip_prefix("preset:") == Some(a) => true,
+                            (Some(DialogSource::Duplicate(t1, p1)), k) if
+                                k == format!("profile:{}/{}", t1, p1) => true,
                             _ => false,
                         };
-                        let resp = tile(ui, selected, title, sub, *tex);
+                        let resp = tile(ui, selected, item);
                         if resp.clicked() {
-                            *source = Some(src.clone());
+                            if let Some(preset) = item.key.strip_prefix("preset:") {
+                                *source = Some(DialogSource::Preset(preset.to_string()));
+                            } else if let Some(pair) = item.key.strip_prefix("profile:") {
+                                if let Some((t, p)) = pair.split_once('/') {
+                                    *source = Some(DialogSource::Duplicate(
+                                        t.to_string(),
+                                        p.to_string(),
+                                    ));
+                                }
+                            }
                         }
                         placed += 1;
-                        if placed % DIALOG_COLS == 0 {
+                        if placed % cols == 0 {
                             ui.end_row();
                         }
                     }
                     // "+" tile: opens the new-preset window.
-                    let resp = tile(ui, false, "+", "new preset", None);
-                    if resp.clicked() {
+                    let plus = plus_tile(ui, cell_w);
+                    if plus.clicked() {
                         *open_preset_dialog = true;
                     }
                     placed += 1;
-                    if placed % DIALOG_COLS != 0 {
+                    if placed % cols != 0 {
                         ui.end_row();
                     }
                 });
@@ -1278,12 +1396,10 @@ fn dialog_body(
 /// Body of the new-preset window: a name and one unified list of sources —
 /// an empty slate, any existing preset, or any profile as a full snapshot —
 /// each with a live preview tile. Actions pinned to the bottom.
-#[allow(clippy::too_many_arguments)]
 fn preset_dialog_body(
     vp_ctx: &egui::Context,
     shared: &SharedSettings,
-    cards: &[PreviewCard],
-    preset_previews: &[PresetPreview],
+    previews: &mut DialogPreviews,
     theme_err: &mut Option<String>,
     name: &mut String,
     source: &mut Option<PresetSource>,
@@ -1322,12 +1438,18 @@ fn preset_dialog_body(
         ui.label(egui::RichText::new("Start from").strong());
         ui.add_space(2.0);
 
+        let avail = ui.available_width() - 8.0;
+        let cols = ((avail + TILE_SPACING) / (MIN_TILE_W + TILE_SPACING))
+            .floor()
+            .max(1.0) as usize;
+        let cell_w = (avail - TILE_SPACING * (cols as f32 - 1.0)) / cols as f32;
+        previews.cell_w = cell_w;
+
         let tile = |ui: &mut egui::Ui,
                     selected: bool,
-                    title: &str,
-                    sub: &str,
-                    tex: Option<(&egui::TextureHandle, f32, f32)>|
+                    item: &DialogPreview|
          -> egui::Response {
+            let (img_w, img_h) = item.sim.pixel_size();
             let fill = if selected {
                 ui.visuals().selection.bg_fill
             } else {
@@ -1341,21 +1463,26 @@ fn preset_dialog_body(
                 .rounding(6.0)
                 .inner_margin(6.0)
                 .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
+                    ui.set_min_width(cell_w - 12.0);
                     ui.vertical(|ui| {
-                        if let Some((t, w, h)) = tex {
-                            ui.add(egui::Image::new((t.id(), egui::vec2(w, h))));
+                        if let Some(tex) = &item.texture {
+                            ui.add(egui::Image::new((
+                                tex.id(),
+                                egui::vec2(img_w, img_h),
+                            )));
                         } else {
-                            ui.set_min_size(egui::vec2(100.0, 100.0 * PREVIEW_ASPECT));
+                            ui.set_min_size(egui::vec2(img_w, img_h));
                         }
                         ui.add_space(2.0);
-                        if title == "Empty" {
-                            ui.label(egui::RichText::new(title).strong().size(20.0));
+                        if item.key == "preset:" {
+                            ui.label(
+                                egui::RichText::new(&item.title).strong().size(20.0),
+                            );
                         } else {
-                            ui.label(egui::RichText::new(title).strong());
+                            ui.label(egui::RichText::new(&item.title).strong());
                         }
                         ui.label(
-                            egui::RichText::new(sub)
+                            egui::RichText::new(&item.sub)
                                 .small()
                                 .color(egui::Color32::from_gray(200)),
                         );
@@ -1363,83 +1490,44 @@ fn preset_dialog_body(
                 });
             ui.interact(
                 inner.response.rect,
-                egui::Id::new(("preset-source-tile", title, sub)),
+                egui::Id::new(("preset-source-tile", &item.key)),
                 egui::Sense::click(),
             )
         };
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let cell_w =
-                ((ui.available_width() - 2.0 * TILE_SPACING - 8.0) / DIALOG_COLS as f32)
-                    .max(120.0);
             egui::Grid::new("preset_source_grid")
                 .spacing([TILE_SPACING, TILE_SPACING])
-                .num_columns(DIALOG_COLS)
+                .num_columns(cols)
                 .show(ui, |ui| {
                     let mut placed = 0;
-                    // Empty slate first.
-                    let selected = matches!(source, Some(PresetSource::Empty));
-                    let resp = tile(ui, selected, "Empty", "no themed sections", None);
-                    if resp.clicked() {
-                        *source = Some(PresetSource::Empty);
-                    }
-                    placed += 1;
-                    if placed % DIALOG_COLS == 0 {
-                        ui.end_row();
-                    }
-                    for theme in theme_ids(shared) {
-                        let title = themes::load_def(&shared.store, &theme)
-                            .map(|d| d.name)
-                            .unwrap_or_else(|| theme.clone());
-                        let tex = preset_previews
-                            .iter()
-                            .find(|pp| pp.theme == theme)
-                            .and_then(|pp| {
-                                let (w, h) = pp.sim.pixel_size();
-                                pp.texture.as_ref().map(|t| (t, w, h))
-                            });
-                        let selected =
-                            matches!(source, Some(PresetSource::CopyPreset(a)) if *a == theme);
-                        let resp = tile(ui, selected, &title, "copy of preset", tex);
+                    for item in &*previews.items {
+                        let selected = match (source.as_ref(), item.key.as_str()) {
+                            (Some(PresetSource::Empty), "empty") => true,
+                            (Some(PresetSource::CopyPreset(a)), k) if
+                                k.strip_prefix("preset:") == Some(a) => true,
+                            (Some(PresetSource::CopyProfile(t1, p1)), k) if
+                                k == format!("profile:{}/{}", t1, p1) => true,
+                            _ => false,
+                        };
+                        let resp = tile(ui, selected, item);
                         if resp.clicked() {
-                            *source = Some(PresetSource::CopyPreset(theme.clone()));
+                            if item.key == "empty" {
+                                *source = Some(PresetSource::Empty);
+                            } else if let Some(preset) = item.key.strip_prefix("preset:") {
+                                *source = Some(PresetSource::CopyPreset(preset.to_string()));
+                            } else if let Some(pair) = item.key.strip_prefix("profile:") {
+                                if let Some((t, p)) = pair.split_once('/') {
+                                    *source = Some(PresetSource::CopyProfile(
+                                        t.to_string(),
+                                        p.to_string(),
+                                    ));
+                                }
+                            }
                         }
                         placed += 1;
-                        if placed % DIALOG_COLS == 0 {
+                        if placed % cols == 0 {
                             ui.end_row();
-                        }
-                    }
-                    for theme in theme_ids(shared) {
-                        for profile in shared.store.list_profiles(&theme) {
-                            let label = if theme == "default" {
-                                profile.clone()
-                            } else {
-                                format!("{} \u{00b7} {}", theme, profile)
-                            };
-                            let tex = cards
-                                .iter()
-                                .find(|c| c.theme == theme && c.profile == profile)
-                                .and_then(|c| {
-                                    let (w, h) = c.sim.pixel_size();
-                                    c.texture.as_ref().map(|t| (t, w, h))
-                                });
-                            let selected = matches!(
-                                source,
-                                Some(PresetSource::CopyProfile(t1, p1))
-                                    if *t1 == theme && *p1 == profile
-                            );
-                            let resp =
-                                tile(ui, selected, &label, "copy of profile", tex);
-                            if resp.clicked() {
-                                *source = Some(PresetSource::CopyProfile(
-                                    theme.clone(),
-                                    profile.clone(),
-                                ));
-                            }
-                            placed += 1;
-                            if placed % DIALOG_COLS == 0 {
-                                ui.end_row();
-                            }
                         }
                     }
                 });
