@@ -152,7 +152,7 @@ fn stripe_color(palette: &[[u8; 3]], arc: f32, stripe_len: f32) -> (f32, f32, f3
 }
 
 fn add_circle(pb: &mut PathBuilder, x: f32, y: f32, r: f32) {
-    let k = 0.5522847498 * r;
+    let k = 0.552_284_7 * r;
     pb.move_to(x + r, y);
     pb.cubic_to(x + r, y + k, x + k, y + r, x, y + r);
     pb.cubic_to(x - k, y + r, x - r, y + k, x - r, y);
@@ -162,10 +162,11 @@ fn add_circle(pb: &mut PathBuilder, x: f32, y: f32, r: f32) {
 }
 
 fn paint_solid(color: Color) -> Paint<'static> {
-    let mut p = Paint::default();
-    p.anti_alias = true;
-    p.shader = Shader::SolidColor(color);
-    p
+    Paint {
+        anti_alias: true,
+        shader: Shader::SolidColor(color),
+        ..Default::default()
+    }
 }
 
 fn fill_path(pm: &mut PixmapMut, path: &Path, paint: &Paint) {
@@ -225,6 +226,7 @@ fn radial_fill_circle(pm: &mut PixmapMut, x: f32, y: f32, r: f32, stops: &[(f32,
 /// silhouette while the gradient center rides toward the "light". The fill
 /// never extends beyond `(fx, fy, fr)`, which the dirty-rect accounting
 /// relies on.
+#[allow(clippy::too_many_arguments)]
 fn radial_fill_circle_at(
     pm: &mut PixmapMut,
     fx: f32,
@@ -248,9 +250,11 @@ fn radial_fill_circle_at(
         Transform::identity(),
     );
     if let Some(sh) = shader {
-        let mut paint = Paint::default();
-        paint.anti_alias = true;
-        paint.shader = sh;
+        let paint = Paint {
+            anti_alias: true,
+            shader: sh,
+            ..Default::default()
+        };
         let mut pb = PathBuilder::new();
         add_circle(&mut pb, fx, fy, fr);
         if let Some(p) = pb.finish() {
@@ -1360,14 +1364,9 @@ fn ring_color(base: &[u8; 3], palette: &[[u8; 3]], ring: usize) -> (f32, f32, f3
     }
 }
 
+#[derive(Default)]
 pub struct Ripples {
     list: Vec<Ripple>,
-}
-
-impl Default for Ripples {
-    fn default() -> Self {
-        Self { list: Vec::new() }
-    }
 }
 
 impl Ripples {
@@ -1607,10 +1606,6 @@ mod tests {
         ctx_at(0.5, mouse, vel, 30.0, false)
     }
 
-    fn ctx_full(mouse: (f32, f32), vel: (f32, f32), moving: f32, clicked: bool) -> Ctx<'static> {
-        ctx_at(0.5, mouse, vel, moving, clicked)
-    }
-
     fn ctx_at(
         now: f32,
         mouse: (f32, f32),
@@ -1731,7 +1726,7 @@ mod tests {
         );
 
         // 4s of fast movement for contrast: near the full steady state.
-        for i in 0..240 {
+        for _ in 0..240 {
             step(&mut now);
             b.update(&ctx_at(now, (5000.0, 5000.0), (2000.0, 0.0), 30.0, false));
         }

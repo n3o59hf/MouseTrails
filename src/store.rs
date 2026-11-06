@@ -55,24 +55,13 @@ impl Default for AppConfig {
 
 /// The effect-tuning half of the old flat config — what a theme profile
 /// stores. One document per profile file.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EffectSettings {
     pub trail: TrailCfg,
     pub bubbles: BubbleCfg,
     pub sparkles: SparkleCfg,
     pub ripples: RippleCfg,
-}
-
-impl Default for EffectSettings {
-    fn default() -> Self {
-        Self {
-            trail: TrailCfg::default(),
-            bubbles: BubbleCfg::default(),
-            sparkles: SparkleCfg::default(),
-            ripples: RippleCfg::default(),
-        }
-    }
 }
 
 /// A theme definition: which effect sections the theme restyles. Sections
@@ -173,6 +162,9 @@ impl Store {
         Self { base: config_dir() }
     }
 
+    /// Test/temp-directory constructor (the app itself always uses
+    /// [`Store::from_default`]).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(base: impl Into<PathBuf>) -> Self {
         Self { base: base.into() }
     }
@@ -317,6 +309,7 @@ impl Store {
 
     /// Write `es` only when the profile file doesn't exist yet — used to
     /// materialize a theme's first profile without clobbering user edits.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn ensure_profile(&self, theme: &str, profile: &str, es: &EffectSettings) {
         let path = self.profile_path(theme, profile);
         if !path.exists() {
@@ -388,7 +381,10 @@ impl Store {
         names
     }
 
-    /// Remove a custom theme folder (definition + profiles).
+    /// Remove a custom theme folder (definition + profiles). Not reachable
+    /// from the settings UI yet — custom presets are removed by deleting
+    /// their folder by hand — but part of the store's tested API.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn delete_theme(&self, theme: &str) -> bool {
         std::fs::remove_dir_all(self.theme_dir(theme)).is_ok()
     }

@@ -389,8 +389,10 @@ fn check_and_prompt(shared: Arc<SharedSettings>) {
 /// 144 even when the desktop was set to 60 a second ago.
 fn query_monitor_hz() -> u32 {
     unsafe {
-        let mut dm = DEVMODEW::default();
-        dm.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+        let mut dm = DEVMODEW {
+            dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
         if EnumDisplaySettingsW(w!("DISPLAY"), ENUM_CURRENT_SETTINGS, &mut dm).as_bool()
             && dm.dmDisplayFrequency >= 23
         {

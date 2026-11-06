@@ -277,22 +277,6 @@ impl DialogPreviews {
         Self { cell_w: 0.0, items, open_prev: false }
     }
 
-    fn get(&self, key: &str) -> Option<&DialogPreview> {
-        self.items.iter().find(|i| i.key == key)
-    }
-
-    /// Re-read a profile from disk into its preview and replay it.
-    fn refresh_profile(&mut self, shared: &SharedSettings, theme: &str, profile: &str) {
-        let key = format!("profile:{}/{}", theme, profile);
-        if let Some(item) = self.items.iter_mut().find(|i| i.key == key) {
-            if let Some(es) = shared.store.load_profile(theme, profile) {
-                item.exprs = FrameExprs::build(&es);
-                item.sim.reset();
-                item.played = 0;
-            }
-        }
-    }
-
     /// Swap an item's expressions and replay it (settings changed).
     fn replay(&mut self, key: &str, exprs: FrameExprs) {
         if let Some(item) = self.items.iter_mut().find(|i| i.key == key) {
@@ -355,8 +339,6 @@ const TILE_SPACING: f32 = 10.0;
 const MIN_TILE_W: f32 = 160.0;
 /// Fixed column count of the profile gallery.
 const GALLERY_COLS: usize = 3;
-/// Column count of the create dialog's source grid.
-const DIALOG_COLS: usize = 3;
 /// ~3.7 sim-seconds at the fixed 30 fps step: trail fully grown, particles
 /// mid-life, first click blast happened — a lively freeze frame.
 const PREVIEW_FRAMES: u32 = 110;
@@ -996,7 +978,7 @@ impl eframe::App for SettingsApp {
                     .with_title("New profile")
                     .with_inner_size([660.0, 560.0]),
                 |vp_ctx, _class| {
-                    egui::CentralPanel::default().show(vp_ctx, |ui| {
+                    egui::CentralPanel::default().show(vp_ctx, |_ui| {
                         if vp_ctx.input(|i| i.viewport().close_requested()) {
                             close_requested = true;
                         }
@@ -1033,7 +1015,7 @@ impl eframe::App for SettingsApp {
                     .with_title("New preset")
                     .with_inner_size([660.0, 640.0]),
                 |vp_ctx, _class| {
-                    egui::CentralPanel::default().show(vp_ctx, |ui| {
+                    egui::CentralPanel::default().show(vp_ctx, |_ui| {
                         if vp_ctx.input(|i| i.viewport().close_requested()) {
                             close_requested = true;
                         }
@@ -1054,7 +1036,7 @@ impl eframe::App for SettingsApp {
             }
         }
 
-if fps != app.render_fps {
+        if fps != app.render_fps {
             app.render_fps = fps;
         }
 
@@ -1336,9 +1318,10 @@ fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
 /// preset — and a "+" tile that opens the new-preset window. Actions are
 /// pinned to the bottom; the tile grid fills the rest and adapts its column
 /// count to the window width.
+#[allow(clippy::too_many_arguments)]
 fn dialog_body(
     vp_ctx: &egui::Context,
-    shared: &SharedSettings,
+    _shared: &SharedSettings,
     app: &AppConfig,
     previews: &mut DialogPreviews,
     theme_err: &mut Option<String>,
@@ -1509,7 +1492,7 @@ fn dialog_body(
 /// each with a live preview tile. Actions pinned to the bottom.
 fn preset_dialog_body(
     vp_ctx: &egui::Context,
-    shared: &SharedSettings,
+    _shared: &SharedSettings,
     previews: &mut DialogPreviews,
     theme_err: &mut Option<String>,
     name: &mut String,

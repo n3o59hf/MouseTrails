@@ -133,7 +133,7 @@ fn fnn(f: impl Fn(&[f64]) -> f64 + Clone + Send + Sync + 'static) -> Function<De
 /// is registered here.
 fn frame_context(t: f64, speed: f32, moving: bool) -> HashMapContext<DefaultNumericTypes> {
     let mut ctx = HashMapContext::new();
-    let _ = ctx.set_value("t".into(), Value::Float(t as f64));
+    let _ = ctx.set_value("t".into(), Value::Float(t));
     let _ = ctx.set_value("speed".into(), Value::Float(speed as f64));
     let _ = ctx.set_value("moving".into(), Value::Float(if moving { 1.0 } else { 0.0 }));
     let _ = ctx.set_value("pi".into(), Value::Float(std::f64::consts::PI));
@@ -324,7 +324,7 @@ mod tests {
         let overlong = "1 + 1 + ".repeat(60);
         assert!(validate(&overlong).is_err());
         let mut es = EffectSettings::default();
-        es.trail.width = NumOrExpr::Expr(overlong.into());
+        es.trail.width = NumOrExpr::Expr(overlong);
         let fe = FrameExprs::build(&es);
         assert!(fe.exprs.is_empty());
     }

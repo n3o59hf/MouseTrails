@@ -98,7 +98,6 @@ impl ThemePreview {
         let mut pm =
             tiny_skia::PixmapMut::from_bytes(self.pixmap.data_mut(), w, h).expect("preview pixmap mut");
         self.effects.render(&mut pm, &es, self.t);
-        drop(pm);
 
         // Premultiplied [B G R A] → premultiplied RGBA bytes (swap 0 and 2).
         let data = self.pixmap.data();
