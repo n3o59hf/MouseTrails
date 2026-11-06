@@ -432,13 +432,16 @@ impl SharedSettings {
     }
 
     /// Persist the current effect settings into the active theme's active
-    /// profile file.
+    /// profile file. Effects and app are snapshotted together (both read
+    /// locks held, effects first — the same order switch actions take their
+    /// write locks in), so a concurrent profile switch can't land between
+    /// the two reads and persist new effects into the old profile.
     pub fn save_effects(&self) {
-        let (theme, profile) = {
-            let app = self.app.read().unwrap();
-            (app.theme.clone(), active_profile_in(&app, &app.theme))
-        };
         let es = self.effects.read().unwrap().clone();
+        let app = self.app.read().unwrap();
+        let theme = app.theme.clone();
+        let profile = active_profile_in(&app, &theme);
+        drop(app);
         self.store.save_profile(&theme, &profile, &es);
     }
 
