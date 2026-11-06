@@ -794,13 +794,12 @@ impl eframe::App for SettingsApp {
                             close_requested = true;
                         }
                         close_requested |= dialog_body(
-                            ui,
+                            vp_ctx,
                             shared,
                             &app,
                             cards,
                             preset_previews,
                             theme_err,
-                            *preview_cell_w,
                             dialog_name,
                             dialog_source,
                             preset_dialog_open,
@@ -828,7 +827,7 @@ impl eframe::App for SettingsApp {
                             close_requested = true;
                         }
                         close_requested |= preset_dialog_body(
-                            ui,
+                            vp_ctx,
                             shared,
                             cards,
                             preset_previews,
@@ -955,48 +954,44 @@ fn profiles_group(
         });
 
         // Gallery: fixed three columns; tiles stretch to fill the row and
-        // previews re-render at exactly the tile size. The cell width is
-        // measured INSIDE the scroll area, where the vertical scrollbar has
-        // already taken its share — measuring outside overflows by exactly
-        // that amount.
-        egui::ScrollArea::vertical()
-            .id_source("profiles_scroll")
+        // previews re-render at exactly the tile size. The width is
+        // measured at the group level (the outer page scroll area has
+        // already reserved its scrollbar there) — measuring inside a nested
+        // ScrollArea fed its own content width back and tiles never shrank.
+        let cell_w = ((ui.available_width() - 2.0 * TILE_SPACING - 8.0)
+            / GALLERY_COLS as f32)
+            .max(140.0);
+        *preview_cell_w = cell_w;
+        egui::Grid::new("profile_gallery")
+            .spacing([TILE_SPACING, TILE_SPACING])
+            .num_columns(GALLERY_COLS)
             .show(ui, |ui| {
-                let cell_w = ((ui.available_width() - 2.0 * TILE_SPACING - 8.0)
-                    / GALLERY_COLS as f32)
-                    .max(120.0);
-                *preview_cell_w = cell_w;
-                egui::Grid::new("profile_gallery")
-                    .spacing([TILE_SPACING, TILE_SPACING])
-                    .num_columns(GALLERY_COLS)
-                    .show(ui, |ui| {
-                        // egui's Grid does not auto-wrap at num_columns —
-                        // rows must be ended explicitly.
-                        let mut placed = 0;
-                        for card in cards {
-                            let selected = app.theme == card.theme
-                                && active_profile_in(app, &card.theme) == card.profile;
-                            let resp = gallery_card(ui, card, selected, cell_w);
-                            if resp.clicked() && !selected {
-                                *action = Some(Action::SwitchProfile(
-                                    card.theme.clone(),
-                                    card.profile.clone(),
-                                ));
-                            }
-                            placed += 1;
-                            if placed % GALLERY_COLS == 0 {
-                                ui.end_row();
-                            }
-                        }
-                        let plus = plus_tile(ui, cell_w);
-                        if plus.clicked() {
-                            *dialog_open = true;
-                        }
-                        placed += 1;
-                        if placed % GALLERY_COLS != 0 {
-                            ui.end_row();
-                        }
-                    });
+                // egui's Grid does not auto-wrap at num_columns — rows must
+                // be ended explicitly.
+                let mut placed = 0;
+                for card in cards {
+                    let selected = app.theme == card.theme
+                        && active_profile_in(app, &card.theme) == card.profile;
+                    let resp = gallery_card(ui, card, selected, cell_w);
+                    if resp.clicked() && !selected {
+                        *action = Some(Action::SwitchProfile(
+                            card.theme.clone(),
+                            card.profile.clone(),
+                        ));
+                    }
+                    placed += 1;
+                    if placed % GALLERY_COLS == 0 {
+                        ui.end_row();
+                    }
+                }
+                let plus = plus_tile(ui, cell_w);
+                if plus.clicked() {
+                    *dialog_open = true;
+                }
+                placed += 1;
+                if placed % GALLERY_COLS != 0 {
+                    ui.end_row();
+                }
             });
 
         ui.add_space(4.0);
@@ -1075,7 +1070,9 @@ fn gallery_card(
 
 /// The "+" tile that opens the create-profile dialog.
 fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
-    let img_h = (cell_w - 8.0) * PREVIEW_ASPECT;
+    // Match the gallery card's height: image + spacing + two label rows,
+    // all inside the same 6px frame margins.
+    let img_h = (cell_w - 12.0) * PREVIEW_ASPECT;
     let inner = egui::Frame::none()
         .fill(ui.visuals().faint_bg_color)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -1083,11 +1080,12 @@ fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
         .inner_margin(6.0)
         .show(ui, |ui| {
             ui.set_min_width(cell_w - 12.0);
-            ui.set_min_height(img_h + 38.0);
+            ui.set_min_height(img_h + 46.0);
             ui.centered_and_justified(|ui| {
-                ui.add_space((img_h + 24.0) * 0.3);
-                ui.label(egui::RichText::new("+").size(17.0));
-                ui.label(egui::RichText::new("New profile").small());
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("+").size(17.0));
+                    ui.label(egui::RichText::new("New profile").small());
+                });
             });
         });
     ui.interact(
@@ -1097,51 +1095,50 @@ fn plus_tile(ui: &mut egui::Ui, cell_w: f32) -> egui::Response {
     )
 }
 
-/// Body of the create-profile popup: a name field, then one unified list of
-/// sources with live previews — the current profile (duplicated), every
-/// preset — and a "+" tile that opens the new-preset window.
+/// Body of the create-profile window: a name field, then one unified list
+/// of sources with live previews — the current profile (duplicated), every
+/// preset — and a "+" tile that opens the new-preset window. Actions are
+/// pinned to the bottom; the tile grid fills the rest.
 #[allow(clippy::too_many_arguments)]
 fn dialog_body(
-    ui: &mut egui::Ui,
+    vp_ctx: &egui::Context,
     shared: &SharedSettings,
     app: &AppConfig,
     cards: &[PreviewCard],
     preset_previews: &[PresetPreview],
     theme_err: &mut Option<String>,
-    tile_w: f32,
     name: &mut String,
     source: &mut Option<DialogSource>,
     open_preset_dialog: &mut bool,
     action: &mut Option<Action>,
 ) -> bool {
-    ui.label("Name");
-    ui.text_edit_singleline(name);
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new("Start from").strong());
-
-    // Unified sources: the current profile first, then every preset, each
-    // with its live preview tile. The 4th element is the texture to show —
-    // profile tiles use their card's texture, preset tiles the preset's
-    // own definition-rendered preview.
+    // Unified sources: the current profile first, then every preset. Each
+    // entry carries its texture plus the native pixel size to display it at
+    // (1:1, never scaled).
     let active = active_profile_in(app, &app.theme);
-    let mut sources: Vec<(DialogSource, String, String, Option<&egui::TextureHandle>)> =
-        Vec::new();
+    let mut sources: Vec<(
+        DialogSource,
+        String,
+        String,
+        Option<(&egui::TextureHandle, f32, f32)>,
+    )> = Vec::new();
     if let Some(card) = cards.iter().find(|c| c.theme == app.theme && c.profile == active) {
+        let (w, h) = card.sim.pixel_size();
         sources.push((
             DialogSource::Duplicate(card.theme.clone(), card.profile.clone()),
             "Current profile".to_string(),
             format!("duplicate of {}", card.label),
-            card.texture.as_ref(),
+            card.texture.as_ref().map(|t| (t, w, h)),
         ));
     }
     for theme in theme_ids(shared) {
         let title = themes::load_def(&shared.store, &theme)
             .map(|d| d.name)
             .unwrap_or_else(|| theme.clone());
-        let tex = preset_previews
-            .iter()
-            .find(|pp| pp.theme == theme)
-            .and_then(|pp| pp.texture.as_ref());
+        let tex = preset_previews.iter().find(|pp| pp.theme == theme).and_then(|pp| {
+            let (w, h) = pp.sim.pixel_size();
+            pp.texture.as_ref().map(|t| (t, w, h))
+        });
         sources.push((
             DialogSource::Preset(theme.clone()),
             title,
@@ -1150,132 +1147,140 @@ fn dialog_body(
         ));
     }
 
-    let tile = |ui: &mut egui::Ui,
-                selected: bool,
-                title: &str,
-                sub: &str,
-                tex: Option<&egui::TextureHandle>,
-                tile_w: f32,
-                accent: bool|
-     -> egui::Response {
-        let (img_w, img_h) = match tex {
-            Some(_) => (tile_w, tile_w * PREVIEW_ASPECT),
-            None => (tile_w - 12.0, (tile_w - 12.0) * PREVIEW_ASPECT),
-        };
-        let fill = if selected {
-            ui.visuals().selection.bg_fill
-        } else {
-            ui.visuals().faint_bg_color
-        };
-        let stroke =
-            if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
-        let inner = egui::Frame::none()
-            .fill(fill)
-            .stroke(stroke)
-            .rounding(6.0)
-            .inner_margin(6.0)
-            .show(ui, |ui| {
-                ui.set_min_width(tile_w - 12.0);
-                ui.vertical(|ui| {
-                    if let Some(tex) = tex {
-                        ui.add(egui::Image::new((tex.id(), egui::vec2(img_w, img_h))));
-                    } else {
-                        ui.set_min_size(egui::vec2(img_w, img_h));
-                    }
-                    ui.add_space(2.0);
-                    if accent {
-                        ui.label(egui::RichText::new(title).strong().size(20.0));
-                    } else {
-                        ui.label(egui::RichText::new(title).strong());
-                    }
-                    ui.label(egui::RichText::new(sub).small().color(egui::Color32::from_gray(200)));
-                });
-            });
-        ui.interact(
-            inner.response.rect,
-            egui::Id::new(("source-tile", title, sub)),
-            egui::Sense::click(),
-        )
-    };
+    let mut close = false;
 
-    // Source tiles show previews at their native pixel size — the same
-    // textures the gallery uses — so nothing is scaled. The frame has no
-    // width of its own, so constrain the body to exactly the grid width.
-    ui.set_width(tile_w * DIALOG_COLS as f32 + 2.0 * TILE_SPACING + 38.0);
-    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-        egui::Grid::new("source_grid")
-            .spacing([TILE_SPACING, TILE_SPACING])
-            .num_columns(DIALOG_COLS)
-            .show(ui, |ui| {
-                let mut placed = 0;
-                for (src, title, sub, card) in &sources {
-                    let selected = match (source.as_ref().map(|x| x), src) {
-                        (Some(DialogSource::Preset(a)), DialogSource::Preset(b)) => a == b,
-                        (Some(DialogSource::Duplicate(t1, p1)), DialogSource::Duplicate(t2, p2)) => {
-                            t1 == t2 && p1 == p2
-                        }
-                        _ => false,
-                    };
-                    let tex = *card;
-                    let resp = tile(ui, selected, title, sub, tex, tile_w, false);
-                    if resp.clicked() {
-                        *source = Some(src.clone());
+    // Actions pinned to the bottom of the window.
+    egui::TopBottomPanel::bottom("new-profile-actions").show(vp_ctx, |ui| {
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            let ready = !name.trim().is_empty() && source.is_some();
+            if ui.add_enabled(ready, egui::Button::new("Create")).clicked() {
+                match source.clone() {
+                    Some(DialogSource::Preset(base)) => {
+                        *action = Some(Action::NewProfile(base, name.clone()));
                     }
-                    placed += 1;
-                    if placed % DIALOG_COLS == 0 {
-                        ui.end_row();
+                    Some(DialogSource::Duplicate(theme, profile)) => {
+                        *action =
+                            Some(Action::DuplicateProfile(theme, profile, name.clone()));
                     }
+                    None => {}
                 }
-                // "+" tile: opens the new-preset window.
-                let resp = tile(ui, false, "+", "new preset", None, tile_w, true);
-                if resp.clicked() {
-                    *open_preset_dialog = true;
-                }
-                placed += 1;
-                if placed % DIALOG_COLS != 0 {
-                    ui.end_row();
-                }
-            });
+                name.clear();
+                *source = None;
+                close = true;
+            }
+            if ui.button("Cancel").clicked() {
+                name.clear();
+                *source = None;
+                close = true;
+            }
+            if let Some(err) = &*theme_err {
+                ui.colored_label(egui::Color32::RED, err.clone());
+            }
+        });
+        ui.add_space(6.0);
     });
 
-    if let Some(err) = &*theme_err {
+    egui::CentralPanel::default().show(vp_ctx, |ui| {
+        ui.label("Name");
+        ui.text_edit_singleline(name);
         ui.add_space(4.0);
-        ui.colored_label(egui::Color32::RED, err.clone());
-    }
+        ui.label(egui::RichText::new("Start from").strong());
+        ui.add_space(2.0);
 
-    ui.add_space(8.0);
-    let mut close = false;
-    ui.horizontal(|ui| {
-        let ready = !name.trim().is_empty() && source.is_some();
-        if ui.add_enabled(ready, egui::Button::new("Create")).clicked() {
-            match source.clone() {
-                Some(DialogSource::Preset(base)) => {
-                    *action = Some(Action::NewProfile(base, name.clone()));
-                }
-                Some(DialogSource::Duplicate(theme, profile)) => {
-                    *action = Some(Action::DuplicateProfile(theme, profile, name.clone()));
-                }
-                None => {}
-            }
-            name.clear();
-            *source = None;
-            close = true;
-        }
-        if ui.button("Cancel").clicked() {
-            name.clear();
-            *source = None;
-            close = true;
-        }
+        let tile = |ui: &mut egui::Ui,
+                    selected: bool,
+                    title: &str,
+                    sub: &str,
+                    tex: Option<(&egui::TextureHandle, f32, f32)>|
+         -> egui::Response {
+            let fill = if selected {
+                ui.visuals().selection.bg_fill
+            } else {
+                ui.visuals().faint_bg_color
+            };
+            let stroke =
+                if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
+            let inner = egui::Frame::none()
+                .fill(fill)
+                .stroke(stroke)
+                .rounding(6.0)
+                .inner_margin(6.0)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.vertical(|ui| {
+                        if let Some((t, w, h)) = tex {
+                            ui.add(egui::Image::new((t.id(), egui::vec2(w, h))));
+                        } else {
+                            ui.set_min_size(egui::vec2(100.0, 100.0 * PREVIEW_ASPECT));
+                        }
+                        ui.add_space(2.0);
+                        if sub == "new preset" {
+                            ui.label(egui::RichText::new(title).strong().size(20.0));
+                        } else {
+                            ui.label(egui::RichText::new(title).strong());
+                        }
+                        ui.label(
+                            egui::RichText::new(sub)
+                                .small()
+                                .color(egui::Color32::from_gray(200)),
+                        );
+                    });
+                });
+            ui.interact(
+                inner.response.rect,
+                egui::Id::new(("source-tile", title, sub)),
+                egui::Sense::click(),
+            )
+        };
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let cell_w =
+                ((ui.available_width() - 2.0 * TILE_SPACING - 8.0) / DIALOG_COLS as f32)
+                    .max(120.0);
+            egui::Grid::new("source_grid")
+                .spacing([TILE_SPACING, TILE_SPACING])
+                .num_columns(DIALOG_COLS)
+                .show(ui, |ui| {
+                    let mut placed = 0;
+                    for (src, title, sub, tex) in &sources {
+                        let selected = match (source.as_ref().map(|x| x), src) {
+                            (Some(DialogSource::Preset(a)), DialogSource::Preset(b)) => a == b,
+                            (Some(DialogSource::Duplicate(t1, p1)), DialogSource::Duplicate(t2, p2)) => {
+                                t1 == t2 && p1 == p2
+                            }
+                            _ => false,
+                        };
+                        let resp = tile(ui, selected, title, sub, *tex);
+                        if resp.clicked() {
+                            *source = Some(src.clone());
+                        }
+                        placed += 1;
+                        if placed % DIALOG_COLS == 0 {
+                            ui.end_row();
+                        }
+                    }
+                    // "+" tile: opens the new-preset window.
+                    let resp = tile(ui, false, "+", "new preset", None);
+                    if resp.clicked() {
+                        *open_preset_dialog = true;
+                    }
+                    placed += 1;
+                    if placed % DIALOG_COLS != 0 {
+                        ui.end_row();
+                    }
+                });
+        });
     });
     close
 }
 
 /// Body of the new-preset window: a name and one unified list of sources —
 /// an empty slate, any existing preset, or any profile as a full snapshot —
-/// each with a live preview tile.
+/// each with a live preview tile. Actions pinned to the bottom.
 #[allow(clippy::too_many_arguments)]
 fn preset_dialog_body(
-    ui: &mut egui::Ui,
+    vp_ctx: &egui::Context,
     shared: &SharedSettings,
     cards: &[PreviewCard],
     preset_previews: &[PresetPreview],
@@ -1284,160 +1289,163 @@ fn preset_dialog_body(
     source: &mut Option<PresetSource>,
     action: &mut Option<Action>,
 ) -> bool {
-    ui.label("Name");
-    ui.text_edit_singleline(name);
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new("Start from").strong());
+    let mut close = false;
 
-    let tile = |ui: &mut egui::Ui,
-                selected: bool,
-                title: &str,
-                sub: &str,
-                tex: Option<&egui::TextureHandle>,
-                tile_w: f32,
-                accent: bool|
-     -> egui::Response {
-        let (img_w, img_h) = match tex {
-            Some(_) => (tile_w, tile_w * PREVIEW_ASPECT),
-            None => (tile_w - 12.0, (tile_w - 12.0) * PREVIEW_ASPECT),
-        };
-        let fill = if selected {
-            ui.visuals().selection.bg_fill
-        } else {
-            ui.visuals().faint_bg_color
-        };
-        let stroke =
-            if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
-        let inner = egui::Frame::none()
-            .fill(fill)
-            .stroke(stroke)
-            .rounding(6.0)
-            .inner_margin(6.0)
-            .show(ui, |ui| {
-                ui.set_min_width(tile_w - 12.0);
-                ui.vertical(|ui| {
-                    if let Some(tex) = tex {
-                        ui.add(egui::Image::new((tex.id(), egui::vec2(img_w, img_h))));
-                    } else {
-                        ui.set_min_size(egui::vec2(img_w, img_h));
-                    }
-                    ui.add_space(2.0);
-                    if accent {
-                        ui.label(egui::RichText::new(title).strong().size(20.0));
-                    } else {
-                        ui.label(egui::RichText::new(title).strong());
-                    }
-                    ui.label(
-                        egui::RichText::new(sub).small().color(egui::Color32::from_gray(200)),
-                    );
-                });
-            });
-        ui.interact(
-            inner.response.rect,
-            egui::Id::new(("preset-source-tile", title, sub)),
-            egui::Sense::click(),
-        )
-    };
+    egui::TopBottomPanel::bottom("new-preset-actions").show(vp_ctx, |ui| {
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            let ready = !name.trim().is_empty() && source.is_some();
+            if ui.add_enabled(ready, egui::Button::new("Create")).clicked() {
+                if let Some(src) = source.clone() {
+                    *action = Some(Action::CreateCustom(name.clone(), src));
+                }
+                name.clear();
+                *source = None;
+                close = true;
+            }
+            if ui.button("Cancel").clicked() {
+                name.clear();
+                *source = None;
+                close = true;
+            }
+            if let Some(err) = &*theme_err {
+                ui.colored_label(egui::Color32::RED, err.clone());
+            }
+        });
+        ui.add_space(6.0);
+    });
 
-    // Unified sources: empty slate, every preset, every profile.
-    let mut sources: Vec<(PresetSource, String, String, Option<&egui::TextureHandle>)> =
-        Vec::new();
-    sources.push((
-        PresetSource::Empty,
-        "Empty".to_string(),
-        "no themed sections".to_string(),
-        None,
-    ));
-    for theme in theme_ids(shared) {
-        let title = themes::load_def(&shared.store, &theme)
-            .map(|d| d.name)
-            .unwrap_or_else(|| theme.clone());
-        let tex = preset_previews
-            .iter()
-            .find(|pp| pp.theme == theme)
-            .and_then(|pp| pp.texture.as_ref());
-        sources.push((
-            PresetSource::CopyPreset(theme.clone()),
-            title,
-            format!("copy of preset: {}", theme),
-            tex,
-        ));
-    }
-    for theme in theme_ids(shared) {
-        for profile in shared.store.list_profiles(&theme) {
-            let label = if theme == "default" {
-                profile.clone()
+    egui::CentralPanel::default().show(vp_ctx, |ui| {
+        ui.label("Name");
+        ui.text_edit_singleline(name);
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Start from").strong());
+        ui.add_space(2.0);
+
+        let tile = |ui: &mut egui::Ui,
+                    selected: bool,
+                    title: &str,
+                    sub: &str,
+                    tex: Option<(&egui::TextureHandle, f32, f32)>|
+         -> egui::Response {
+            let fill = if selected {
+                ui.visuals().selection.bg_fill
             } else {
-                format!("{} \u{00b7} {}", theme, profile)
+                ui.visuals().faint_bg_color
             };
-            let tex = cards
-                .iter()
-                .find(|c| c.theme == theme && c.profile == profile)
-                .and_then(|c| c.texture.as_ref());
-            sources.push((
-                PresetSource::CopyProfile(theme.clone(), profile.clone()),
-                label,
-                "copy of profile".to_string(),
-                tex,
-            ));
-        }
-    }
-
-    let tile_w =
-        ((ui.available_width() - 2.0 * TILE_SPACING - 8.0) / DIALOG_COLS as f32).max(120.0);
-    egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
-        egui::Grid::new("preset_source_grid")
-            .spacing([TILE_SPACING, TILE_SPACING])
-            .num_columns(DIALOG_COLS)
-            .show(ui, |ui| {
-                let mut placed = 0;
-                for (src, title, sub, card) in &sources {
-                    let selected = match (source.as_ref(), src) {
-                        (Some(PresetSource::Empty), PresetSource::Empty) => true,
-                        (Some(PresetSource::CopyPreset(a)), PresetSource::CopyPreset(b)) => a == b,
-                        (Some(PresetSource::CopyProfile(t1, p1)), PresetSource::CopyProfile(t2, p2)) => {
-                            t1 == t2 && p1 == p2
+            let stroke =
+                if selected { ui.visuals().selection.stroke } else { egui::Stroke::NONE };
+            let inner = egui::Frame::none()
+                .fill(fill)
+                .stroke(stroke)
+                .rounding(6.0)
+                .inner_margin(6.0)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.vertical(|ui| {
+                        if let Some((t, w, h)) = tex {
+                            ui.add(egui::Image::new((t.id(), egui::vec2(w, h))));
+                        } else {
+                            ui.set_min_size(egui::vec2(100.0, 100.0 * PREVIEW_ASPECT));
                         }
-                        _ => false,
-                    };
-                    let tex = *card;
-                    let resp = tile(ui, selected, title, sub, tex, tile_w, title == "+");
+                        ui.add_space(2.0);
+                        if title == "Empty" {
+                            ui.label(egui::RichText::new(title).strong().size(20.0));
+                        } else {
+                            ui.label(egui::RichText::new(title).strong());
+                        }
+                        ui.label(
+                            egui::RichText::new(sub)
+                                .small()
+                                .color(egui::Color32::from_gray(200)),
+                        );
+                    });
+                });
+            ui.interact(
+                inner.response.rect,
+                egui::Id::new(("preset-source-tile", title, sub)),
+                egui::Sense::click(),
+            )
+        };
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let cell_w =
+                ((ui.available_width() - 2.0 * TILE_SPACING - 8.0) / DIALOG_COLS as f32)
+                    .max(120.0);
+            egui::Grid::new("preset_source_grid")
+                .spacing([TILE_SPACING, TILE_SPACING])
+                .num_columns(DIALOG_COLS)
+                .show(ui, |ui| {
+                    let mut placed = 0;
+                    // Empty slate first.
+                    let selected = matches!(source, Some(PresetSource::Empty));
+                    let resp = tile(ui, selected, "Empty", "no themed sections", None);
                     if resp.clicked() {
-                        *source = Some(src.clone());
+                        *source = Some(PresetSource::Empty);
                     }
                     placed += 1;
                     if placed % DIALOG_COLS == 0 {
                         ui.end_row();
                     }
-                }
-            });
+                    for theme in theme_ids(shared) {
+                        let title = themes::load_def(&shared.store, &theme)
+                            .map(|d| d.name)
+                            .unwrap_or_else(|| theme.clone());
+                        let tex = preset_previews
+                            .iter()
+                            .find(|pp| pp.theme == theme)
+                            .and_then(|pp| {
+                                let (w, h) = pp.sim.pixel_size();
+                                pp.texture.as_ref().map(|t| (t, w, h))
+                            });
+                        let selected =
+                            matches!(source, Some(PresetSource::CopyPreset(a)) if *a == theme);
+                        let resp = tile(ui, selected, &title, "copy of preset", tex);
+                        if resp.clicked() {
+                            *source = Some(PresetSource::CopyPreset(theme.clone()));
+                        }
+                        placed += 1;
+                        if placed % DIALOG_COLS == 0 {
+                            ui.end_row();
+                        }
+                    }
+                    for theme in theme_ids(shared) {
+                        for profile in shared.store.list_profiles(&theme) {
+                            let label = if theme == "default" {
+                                profile.clone()
+                            } else {
+                                format!("{} \u{00b7} {}", theme, profile)
+                            };
+                            let tex = cards
+                                .iter()
+                                .find(|c| c.theme == theme && c.profile == profile)
+                                .and_then(|c| {
+                                    let (w, h) = c.sim.pixel_size();
+                                    c.texture.as_ref().map(|t| (t, w, h))
+                                });
+                            let selected = matches!(
+                                source,
+                                Some(PresetSource::CopyProfile(t1, p1))
+                                    if *t1 == theme && *p1 == profile
+                            );
+                            let resp =
+                                tile(ui, selected, &label, "copy of profile", tex);
+                            if resp.clicked() {
+                                *source = Some(PresetSource::CopyProfile(
+                                    theme.clone(),
+                                    profile.clone(),
+                                ));
+                            }
+                            placed += 1;
+                            if placed % DIALOG_COLS == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    }
+                });
+        });
     });
-
-    if let Some(err) = &*theme_err {
-        ui.add_space(4.0);
-        ui.colored_label(egui::Color32::RED, err.clone());
-    }
-
-    ui.add_space(8.0);
-    let mut close = false;
-    ui.horizontal(|ui| {
-        let ready = !name.trim().is_empty() && source.is_some();
-        if ui.add_enabled(ready, egui::Button::new("Create")).clicked() {
-            if let Some(src) = source.clone() {
-                *action = Some(Action::CreateCustom(name.clone(), src));
-            }
-            name.clear();
-            *source = None;
-            return true;
-        }
-        if ui.button("Cancel").clicked() {
-            name.clear();
-            *source = None;
-            return true;
-        }
-        false
-    });
-    false
+    close
 }
 
 fn trail_section(ui: &mut egui::Ui, s: &mut EffectSettings) {
