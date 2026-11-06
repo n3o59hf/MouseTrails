@@ -170,6 +170,22 @@ fn hide_settings_window(ctx: &egui::Context, shared: &SharedSettings) {
     }
 }
 
+/// Modal scrim over a whole window: dims it and swallows all pointer input
+/// while a child dialog window is open, so only one window is active at a
+/// time. The scrimmed window keeps rendering (previews stay animated under
+/// the dim); its own title bar stays OS-native and closeable.
+fn modal_scrim(ctx: &egui::Context) {
+    let rect = ctx.screen_rect();
+    egui::Area::new(egui::Id::new("modal-scrim"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.min)
+        .show(ctx, |ui| {
+            let resp = ui.allocate_rect(rect, egui::Sense::click());
+            ui.painter()
+                .rect_filled(resp.rect, 0.0, egui::Color32::from_black_alpha(120));
+        });
+}
+
 struct SettingsApp {
     shared: Arc<SharedSettings>,
     rx: Receiver<UiMsg>,
@@ -806,6 +822,18 @@ impl eframe::App for SettingsApp {
             }
             hide_settings_window(ctx, shared);
             self.window_visible = false;
+            // Hiding the settings window takes its modal children with it.
+            // The explicit Close matters: a hidden window gets no further
+            // egui passes, so the flag alone would leave the dialog OS
+            // windows orphaned on screen.
+            *dialog_open = false;
+            *preset_dialog_open = false;
+            for id in ["new-profile-dialog", "new-preset-dialog"] {
+                ctx.send_viewport_cmd_to(
+                    egui::ViewportId(egui::Id::new(id)),
+                    egui::ViewportCommand::Close,
+                );
+            }
             return;
         }
 
@@ -917,6 +945,12 @@ impl eframe::App for SettingsApp {
             });
         });
 
+        // Modal: while the create-profile dialog is open, the settings
+        // window itself is dimmed and takes no input.
+        if *dialog_open {
+            modal_scrim(ctx);
+        }
+
         // The create-profile popup is its own OS window (a viewport): it
         // gets the same native title bar as the main window and is never
         // clipped by it. The body asks for closure by return value, and the
@@ -944,6 +978,11 @@ impl eframe::App for SettingsApp {
                             preset_dialog_open,
                             &mut action,
                         );
+                        // Modal: while the new-preset window is open, this
+                        // dialog is dimmed and takes no input.
+                        if *preset_dialog_open {
+                            modal_scrim(vp_ctx);
+                        }
                     });
                 },
             );
