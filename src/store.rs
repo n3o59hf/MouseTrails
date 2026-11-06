@@ -8,7 +8,8 @@
 //!   themes\<id>\
 //!     theme.json           theme definition (customs only; built-ins live in
 //!                          the binary, but a file here overrides them)
-//!     default.json         profile: a full EffectSettings document
+//!     main.json            the preset's primary profile: a full
+//!                          EffectSettings document
 //!     <name>.json          named profiles
 //! ```
 

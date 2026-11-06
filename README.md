@@ -97,7 +97,8 @@ config.json                root config: active theme, per-theme profile
                            selection, render FPS
 themes\<id>\
   theme.json               preset definition (custom presets only)
-  default.json             profile: a complete effect-settings document
+  main.json                the preset's primary profile: a complete
+                           effect-settings document
   <name>.json              named profiles
 ```
 
@@ -139,7 +140,8 @@ ranges; a malformed expression falls back to the field's default. Fields:
 `trail.width`, `trail.hue_speed`, `bubbles.rate`, `bubbles.buoyancy`,
 `bubbles.wobble`, `bubbles.spin`, `sparkles.rate`, `sparkles.gravity`.
 In the settings window such fields show a monospace editor; the `=` button
-converts the expression back to a constant.
+converts the expression back to a constant, and a parse error is flagged
+right at the field.
 
 ## How it works
 
