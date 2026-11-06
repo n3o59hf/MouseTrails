@@ -585,35 +585,41 @@ fn perform_action(
             .map(|_| Vec::new())
         }
         Action::DeleteProfile(theme, profile) => {
-            // If it's the active one, move to any other profile first. When
-            // none remain anywhere, the in-memory settings simply stay
-            // active until a new profile is created.
-            if shared.active_profile(&theme) == profile {
-                let mut remaining: Vec<(String, String)> = Vec::new();
-                for t in theme_ids(shared) {
-                    for pr in shared.store.list_profiles(&t) {
-                        if !(t == theme && pr == profile) {
-                            remaining.push((t.clone(), pr));
-                        }
-                    }
-                }
-                if let Some((next_theme, next_profile)) = remaining.first() {
-                    let es = shared
-                        .store
-                        .load_profile(next_theme, next_profile)
-                        .unwrap_or_else(|| {
-                            themes::materialize_profile(&shared.store, next_theme)
-                        });
-                    *shared.effects.write().unwrap() = es;
-                    let mut app = shared.app.write().unwrap();
-                    app.theme = next_theme.clone();
-                    app.profiles.insert(next_theme.clone(), next_profile.clone());
-                    shared.store.save_app(&app);
-                }
-            }
+            let was_active = shared.active_profile(&theme) == profile;
             if !shared.store.delete_profile(&theme, &profile) {
                 return Err(format!("Could not delete profile \u{201C}{}\u{201D}.", profile));
             }
+            if !was_active {
+                return ok(Vec::new());
+            }
+            // The active profile is gone: move to any other. When none
+            // remain anywhere, re-materialize this theme's primary profile
+            // — otherwise the selection dangles and the next tweak would
+            // silently resurrect the deleted file under its old name.
+            let mut remaining: Vec<(String, String)> = Vec::new();
+            for t in theme_ids(shared) {
+                for pr in shared.store.list_profiles(&t) {
+                    remaining.push((t.clone(), pr.clone()));
+                }
+            }
+            let (next_theme, next_profile, es) = match remaining.first() {
+                Some((t, p)) => {
+                    let es = shared.store.load_profile(t, p).unwrap_or_else(|| {
+                        themes::materialize_profile(&shared.store, t)
+                    });
+                    (t.clone(), p.clone(), es)
+                }
+                None => {
+                    let es = themes::materialize_profile(&shared.store, &theme);
+                    shared.store.save_profile(&theme, store::DEFAULT_PROFILE, &es);
+                    (theme.clone(), store::DEFAULT_PROFILE.to_string(), es)
+                }
+            };
+            *shared.effects.write().unwrap() = es;
+            let mut app = shared.app.write().unwrap();
+            app.theme = next_theme.clone();
+            app.profiles.insert(next_theme.clone(), next_profile.clone());
+            shared.store.save_app(&app);
             ok(Vec::new())
         }
         Action::DuplicateProfile(src_theme, src_profile, name) => {
