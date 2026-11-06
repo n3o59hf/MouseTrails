@@ -421,10 +421,19 @@ fn build_profile_dialog_previews(
     DialogPreviews::build(items)
 }
 
-/// Previews for the new-preset window: every preset (from its definition)
-/// and every profile (from its file), as snapshot sources.
+/// Previews for the new-preset window: an empty slate (a blank theme.json to
+/// fill in by hand), every preset (from its definition) and every profile
+/// (from its file), as snapshot sources.
 fn build_preset_dialog_previews(shared: &SharedSettings) -> DialogPreviews {
     let mut items = Vec::new();
+    // The empty definition themes nothing, so its preview shows the factory
+    // defaults the preset would fall back to.
+    items.push(dialog_preview(
+        "empty".into(),
+        "Empty".into(),
+        "blank theme.json to fill in".to_string(),
+        &EffectSettings::default(),
+    ));
     for theme in theme_ids(shared) {
         let title = themes::load_def(&shared.store, &theme)
             .map(|d| d.name)
