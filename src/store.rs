@@ -393,12 +393,21 @@ impl Store {
     }
 }
 
+/// Serialize to a temp file next to `path`, then rename over it — a crash
+/// or power loss mid-write must not leave a truncated config. The rename
+/// replaces atomically on the same volume. Each call uses its own temp name
+/// so two threads writing the same path can't interleave into one temp.
 fn write_json<T: serde::Serialize>(path: &Path, value: &T) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     if let Ok(json) = serde_json::to_string_pretty(value) {
-        let _ = std::fs::write(path, json);
+        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension(format!("tmp{}", n));
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 }
 
