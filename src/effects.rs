@@ -1320,8 +1320,11 @@ struct Ripple {
     phase: f32,
 }
 
-/// Polyline segments per organic ring.
-const RING_SEGMENTS: usize = 40;
+/// Polyline segments per organic ring. Wobble lobes are sampled by this
+/// polyline, so it needs at least ~4 samples per lobe at the 24-lobe cap —
+/// fewer alias into a wrong lobe count (40 segments even drew 20 lobes as a
+/// clean circle: the sine is zero at every sample).
+const RING_SEGMENTS: usize = 96;
 /// Duration of the bright radial flash at the click point.
 const FLASH_SECS: f32 = 0.15;
 
