@@ -162,14 +162,29 @@ fn frame_context(t: f64, speed: f32, moving: bool) -> HashMapContext<DefaultNume
     ctx
 }
 
+/// Parse-check a raw expression the way `FrameExprs::build` will: same
+/// length cap, same parser. `Ok(())` does not guarantee eval-time success
+/// (unknown variables only fail at eval, where the field falls back to its
+/// default); `Err` carries a user-facing message for the settings UI.
+pub fn validate(src: &str) -> Result<(), String> {
+    if src.len() > MAX_EXPR_LEN {
+        return Err(format!(
+            "expression too long ({} > {} characters)",
+            src.len(),
+            MAX_EXPR_LEN
+        ));
+    }
+    build_operator_tree::<DefaultNumericTypes>(src)
+        .map(|_| ())
+        .map_err(|e| format!("{}", e))
+}
+
 /// Parsed expression fields plus the base settings with those fields set to
 /// their safe defaults. Built whenever the settings change; resolved once
 /// per frame.
 pub struct FrameExprs {
     base: EffectSettings,
     exprs: Vec<(Field, Node<DefaultNumericTypes>)>,
-    /// Human-readable parse failures, surfaced in the settings UI.
-    pub errors: Vec<String>,
 }
 
 impl FrameExprs {
@@ -180,32 +195,26 @@ impl FrameExprs {
     }
 
     /// Extract and parse every expression field. Constant-only settings
-    /// produce an empty `exprs`, making `resolve` a plain clone.
+    /// produce an empty `exprs`, making `resolve` a plain clone. Unparseable
+    /// expressions are skipped — the field keeps its safe default (the
+    /// settings UI flags them inline via [`validate`]).
     pub fn build(es: &EffectSettings) -> Self {
         let mut base = es.clone();
         let mut exprs = Vec::new();
-        let mut errors = Vec::new();
         for field in Field::ALL {
             let value = field.get(&base).clone();
             if let NumOrExpr::Expr(src) = value {
                 // The base carries the safe default; successful evaluations
                 // overwrite it each frame.
                 field.set(&mut base, field.default_value());
-                if src.len() > MAX_EXPR_LEN {
-                    errors.push(format!(
-                        "expression too long ({} > {} characters)",
-                        src.len(),
-                        MAX_EXPR_LEN
-                    ));
-                    continue;
-                }
-                match build_operator_tree::<DefaultNumericTypes>(&src) {
-                    Ok(node) => exprs.push((field, node)),
-                    Err(e) => errors.push(format!("bad expression \u{201C}{}\u{201D}: {}", src, e)),
+                if src.len() <= MAX_EXPR_LEN {
+                    if let Ok(node) = build_operator_tree::<DefaultNumericTypes>(&src) {
+                        exprs.push((field, node));
+                    }
                 }
             }
         }
-        Self { base, exprs, errors }
+        Self { base, exprs }
     }
 
     /// Evaluate all expressions once for this frame and substitute the
@@ -251,7 +260,6 @@ mod tests {
     fn constant_settings_take_the_fast_path() {
         let fe = FrameExprs::build(&EffectSettings::default());
         assert!(!fe.any());
-        assert!(fe.errors.is_empty());
         // Resolve must equal the input verbatim.
         assert_eq!(fe.resolve(1.0, 100.0, true), EffectSettings::default());
     }
@@ -289,35 +297,35 @@ mod tests {
     }
 
     #[test]
-    fn bad_expressions_fall_back_to_defaults_with_errors() {
+    fn bad_expressions_fall_back_to_defaults() {
         let mut es = EffectSettings::default();
-        // Unmatched parenthesis: rejected at build time.
+        // Unmatched parenthesis: rejected at build time and by validate().
+        assert!(validate("(1 + 2").is_err(), "parse failure is reported");
         es.trail.width = NumOrExpr::Expr("(1 + 2".into());
         let fe = FrameExprs::build(&es);
-        assert!(!fe.errors.is_empty(), "parse failure is reported");
         // The field keeps its default, so rendering continues.
         assert_eq!(fe.resolve(0.0, 0.0, false).trail.width.value(), 10.0);
 
         // Unknown identifiers parse but fail at eval time — same fallback.
+        assert!(validate("nope + 1").is_ok());
         es.trail.width = NumOrExpr::Expr("nope + 1".into());
         let fe = FrameExprs::build(&es);
-        assert!(fe.errors.is_empty());
         assert_eq!(fe.resolve(0.0, 0.0, false).trail.width.value(), 10.0);
 
         // evalexpr tolerates dangling operators at build time; they fail at
         // eval and fall back the same way.
         es.trail.width = NumOrExpr::Expr("1 +".into());
         let fe = FrameExprs::build(&es);
-        assert!(fe.errors.is_empty());
         assert_eq!(fe.resolve(0.0, 0.0, false).trail.width.value(), 10.0);
     }
 
     #[test]
     fn overlong_expressions_are_rejected() {
+        let overlong = "1 + 1 + ".repeat(60);
+        assert!(validate(&overlong).is_err());
         let mut es = EffectSettings::default();
-        es.trail.width = NumOrExpr::Expr("1 + 1 + ".repeat(60).into());
+        es.trail.width = NumOrExpr::Expr(overlong.into());
         let fe = FrameExprs::build(&es);
-        assert!(!fe.errors.is_empty());
         assert!(fe.exprs.is_empty());
     }
 

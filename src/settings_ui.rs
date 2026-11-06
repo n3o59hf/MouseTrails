@@ -1724,6 +1724,11 @@ fn num_or_expr_slider(
                 );
                 revert = ui.small_button("=").clicked();
             });
+            // The overlay silently falls back to the field default on a bad
+            // expression — flag it right at the field so the typo is seen.
+            if let Err(e) = crate::expr::validate(src) {
+                ui.label(egui::RichText::new(e).small().color(egui::Color32::RED));
+            }
             if revert {
                 let parsed = src.trim().parse::<f32>().unwrap_or(*range.start());
                 *field = NumOrExpr::Num(parsed.clamp(*range.start(), *range.end()));
