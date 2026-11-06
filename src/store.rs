@@ -347,6 +347,18 @@ impl Store {
         std::fs::remove_file(self.profile_path(theme, profile)).is_ok()
     }
 
+    /// When a profile file exists but won't parse, rename it to
+    /// `<profile>.json.corrupt` so replacing it doesn't destroy the user's
+    /// tuning — the same courtesy the legacy-config migration extends to
+    /// config.json. Missing files are left alone.
+    pub fn back_up_corrupt_profile(&self, theme: &str, profile: &str) {
+        let path = self.profile_path(theme, profile);
+        if path.is_file() {
+            let bak = path.with_extension("json.corrupt");
+            let _ = std::fs::rename(&path, &bak);
+        }
+    }
+
     // -- theme definitions --------------------------------------------------
 
     /// The custom theme definition stored on disk, if any. Built-in themes
@@ -633,6 +645,31 @@ mod tests {
         es.trail.width = NumOrExpr::Num(99.0);
         store.ensure_profile("default", "default", &es);
         assert_eq!(store.load_profile("default", "default").unwrap().trail.width, NumOrExpr::Num(1.0));
+    }
+
+    #[test]
+    fn corrupt_profiles_are_backed_up_before_replacement() {
+        let (store, _dir) = temp_store("corrupt-profile");
+        store.save_profile("default", "cozy", &EffectSettings::default());
+        std::fs::write(
+            store.profile_path("default", "cozy"),
+            "{ truncated !!!",
+        )
+        .unwrap();
+
+        // What main.rs does when load_profile returns None for an existing
+        // file: back it up, then write the materialized settings.
+        assert!(store.load_profile("default", "cozy").is_none());
+        store.back_up_corrupt_profile("default", "cozy");
+        let bak = std::fs::read_to_string(
+            store.profile_path("default", "cozy").with_extension("json.corrupt"),
+        )
+        .unwrap();
+        assert_eq!(bak, "{ truncated !!!");
+        store.save_profile("default", "cozy", &EffectSettings::default());
+        assert!(store.load_profile("default", "cozy").is_some());
+        // The backup doesn't show up as a profile.
+        assert_eq!(store.list_profiles("default"), vec!["cozy".to_string()]);
     }
 
     #[test]
