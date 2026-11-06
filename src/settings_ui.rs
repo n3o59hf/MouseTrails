@@ -663,6 +663,9 @@ fn perform_action(
                         bubbles: Some(es.bubbles),
                         sparkles: Some(es.sparkles),
                         ripples: Some(es.ripples),
+                        // The snapshot preset keeps the profile's particle
+                        // budget too.
+                        limits: Some(es.limits),
                     }
                 }
             };
@@ -955,6 +958,24 @@ impl eframe::App for SettingsApp {
                     ui.label(egui::RichText::new("Performance").strong());
                     ui.add(
                         egui::Slider::new(&mut fps, 24..=240).text("Render FPS").suffix(" fps"),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "Population caps protect the frame budget — presets that need denser looks raise them.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut s.limits.bubbles, 10..=400).text("Max bubbles"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut s.limits.sparkles, 20..=1000)
+                            .text("Max sparkles"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut s.limits.ripples, 1..=64)
+                            .text("Max click ripples"),
                     );
                 });
                 ui.add_space(6.0);

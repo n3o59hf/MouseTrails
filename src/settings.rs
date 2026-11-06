@@ -223,6 +223,30 @@ impl Default for RippleCfg {
     }
 }
 
+/// Population caps that protect the frame budget. Per profile, and
+/// themeable: a preset whose look needs dense particle counts (bengal-fire
+/// sparklers, snowstorms) can raise them for profiles created from it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LimitsCfg {
+    /// Maximum living bubbles/snowflakes/ornaments.
+    pub bubbles: u32,
+    /// Maximum living sparkles — bengal-fire children share this pool.
+    pub sparkles: u32,
+    /// Maximum click ripples animating at once.
+    pub ripples: u32,
+}
+
+impl Default for LimitsCfg {
+    fn default() -> Self {
+        Self {
+            bubbles: 90,
+            sparkles: 300,
+            ripples: 24,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

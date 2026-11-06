@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 
-use crate::settings::{BubbleCfg, RippleCfg, SparkleCfg, TrailCfg};
+use crate::settings::{BubbleCfg, LimitsCfg, RippleCfg, SparkleCfg, TrailCfg};
 
 pub const CONFIG_VERSION: u32 = 2;
 
@@ -62,6 +62,8 @@ pub struct EffectSettings {
     pub bubbles: BubbleCfg,
     pub sparkles: SparkleCfg,
     pub ripples: RippleCfg,
+    /// Population caps — the performance half of the profile.
+    pub limits: LimitsCfg,
 }
 
 /// A theme definition: which effect sections the theme restyles. Sections
@@ -78,6 +80,8 @@ pub struct ThemeDef {
     pub bubbles: Option<BubbleCfg>,
     pub sparkles: Option<SparkleCfg>,
     pub ripples: Option<RippleCfg>,
+    /// Population caps for looks that need denser particle counts.
+    pub limits: Option<LimitsCfg>,
 }
 
 /// The legacy flat config that everything before themes used: effect
@@ -262,6 +266,7 @@ impl Store {
                 bubbles: legacy.bubbles,
                 sparkles: legacy.sparkles,
                 ripples: legacy.ripples,
+                ..Default::default()
             },
         );
         self.save_app(&AppConfig {
@@ -620,6 +625,11 @@ mod tests {
             bubbles: None,
             sparkles: None,
             ripples: None,
+            limits: Some(LimitsCfg {
+                bubbles: 120,
+                sparkles: 300,
+                ripples: 24,
+            }),
         };
         store.save_theme_def("frost", &def);
         let back = store.load_theme_def("frost").unwrap();
@@ -664,6 +674,29 @@ mod tests {
         es.trail.width = NumOrExpr::Num(99.0);
         store.ensure_profile("default", "default", &es);
         assert_eq!(store.load_profile("default", "default").unwrap().trail.width, NumOrExpr::Num(1.0));
+    }
+
+    #[test]
+    fn limits_round_trip_and_default_when_absent() {
+        let (store, _dir) = temp_store("limits");
+        let mut es = EffectSettings::default();
+        es.limits.sparkles = 600;
+        store.save_profile("default", "cozy", &es);
+        assert_eq!(
+            store.load_profile("default", "cozy").unwrap().limits.sparkles,
+            600
+        );
+
+        // Profiles written before limits existed load with the defaults.
+        std::fs::write(
+            store.profile_path("default", "old"),
+            r#"{ "trail": {}, "bubbles": {}, "sparkles": {}, "ripples": {} }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            store.load_profile("default", "old").unwrap().limits,
+            LimitsCfg::default()
+        );
     }
 
     #[test]

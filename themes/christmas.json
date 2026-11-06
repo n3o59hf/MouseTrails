@@ -127,5 +127,10 @@
     "wobble": 0.0,
     "wobble_end": 0.12,
     "wobble_lobes": 8
+  },
+  "limits": {
+    "bubbles": 90,
+    "sparkles": 600,
+    "ripples": 24
   }
 }

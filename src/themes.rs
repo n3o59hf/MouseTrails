@@ -42,6 +42,7 @@ pub fn apply_def(def: &ThemeDef, current: &EffectSettings) -> EffectSettings {
         bubbles: def.bubbles.clone().unwrap_or_else(|| current.bubbles.clone()),
         sparkles: def.sparkles.clone().unwrap_or_else(|| current.sparkles.clone()),
         ripples: def.ripples.clone().unwrap_or_else(|| current.ripples.clone()),
+        limits: def.limits.unwrap_or(current.limits),
     }
 }
 
@@ -121,6 +122,16 @@ mod tests {
         let applied = apply_def(&partial, &current);
         assert!(!applied.ripples.enabled, "ripples unthemed, stays as-is");
         assert_eq!(applied.trail.style, crate::settings::TrailStyle::Striped);
+
+        // Christmas raises the sparkle budget for its bengal-fire sparks;
+        // limits theme like any other section — unthemed values carry over.
+        assert_eq!(christmas.limits.unwrap().sparkles, 600);
+        let mut current = EffectSettings::default();
+        current.limits.sparkles = 111;
+        let mut no_limits = christmas.clone();
+        no_limits.limits = None;
+        assert_eq!(apply_def(&no_limits, &current).limits.sparkles, 111);
+        assert_eq!(apply_def(&christmas, &current).limits.sparkles, 600);
     }
 
     #[test]

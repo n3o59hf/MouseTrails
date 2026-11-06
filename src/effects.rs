@@ -752,9 +752,12 @@ impl Effect for Bubbles {
 
         self.acc += c.rate.value().max(0.0) * ctx.dt * self.speed_mod * fade;
         let momentum = c.momentum.clamp(0.0, 1.0);
+        // Profile cap, with an absolute ceiling so a hand-edited profile
+        // can't flood the frame budget.
+        let cap = ctx.cfg.limits.bubbles.min(1000) as usize;
         while self.acc >= 1.0 {
             self.acc -= 1.0;
-            if self.list.len() < 90 {
+            if self.list.len() < cap {
                 let color = self.next_color(&c.palette);
                 let dir = if rnd01() < 0.5 { -1.0 } else { 1.0 };
                 let speed = (ctx.vel.0 * ctx.vel.0 + ctx.vel.1 * ctx.vel.1).sqrt();
@@ -1159,9 +1162,12 @@ impl Effect for Sparkles {
             self.acc += c.rate.value().max(0.0) * ctx.dt * ramp;
         }
         let momentum = c.momentum.clamp(0.0, 1.0);
+        // Profile cap (children share the pool), with an absolute ceiling
+        // so a hand-edited profile can't flood the frame budget.
+        let cap = ctx.cfg.limits.sparkles.min(3000) as usize;
         while self.acc >= 1.0 {
             self.acc -= 1.0;
-            if self.list.len() < 300 {
+            if self.list.len() < cap {
                 let ang = rnd01() * std::f32::consts::TAU;
                 let speed = rnd_range(30.0, 160.0);
                 let color = self.next_color(&c.color, &c.palette);
@@ -1196,7 +1202,7 @@ impl Effect for Sparkles {
                 s.emit_acc += c.child_rate.max(0.0) * ctx.dt;
                 while s.emit_acc >= 1.0 {
                     s.emit_acc -= 1.0;
-                    if population >= 300 {
+                    if population >= cap {
                         s.emit_acc = 0.0;
                         break;
                     }
@@ -1383,7 +1389,9 @@ impl Effect for Ripples {
             return;
         }
         // One entry per click; the staggered rings are drawn from it.
-        if ctx.clicked && self.list.len() < 24 {
+        // Profile cap with an absolute ceiling (see the bubble cap).
+        let cap = ctx.cfg.limits.ripples.min(128) as usize;
+        if ctx.clicked && self.list.len() < cap {
             self.list.push(Ripple {
                 x: ctx.mouse.0,
                 y: ctx.mouse.1,
@@ -2201,6 +2209,31 @@ mod tests {
         assert!(b.x1 - b.x0 > 2.0 * 14.0 + 1.0, "streak should extend bounds");
         // Capped at 150: half-extent ≤ 14 + 150 + 1.
         assert!(b.x1 - b.x0 <= 2.0 * (14.0 + 150.0) + 1.0);
+    }
+
+    #[test]
+    fn population_caps_come_from_the_profile() {
+        let mut es = EffectSettings::default();
+        es.bubbles.rate = crate::settings::NumOrExpr::Num(40.0);
+        es.limits.bubbles = 12;
+        let cfg: &'static EffectSettings = Box::leak(Box::new(es));
+        let mut b = Bubbles::default();
+        // 4 s of fast movement: without the cap roughly 96 bubbles alive.
+        for frame in 0..240 {
+            b.update(&ctx_at_cfg(
+                0.5 + frame as f32 / 60.0,
+                (100.0, 100.0),
+                (2000.0, 0.0),
+                30.0,
+                false,
+                cfg,
+            ));
+        }
+        assert!(
+            (10..=12).contains(&b.list.len()),
+            "cap 12 must hold and be reached, got {}",
+            b.list.len()
+        );
     }
 
     fn ctx_at_cfg(
