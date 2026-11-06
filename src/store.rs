@@ -381,6 +381,19 @@ impl Store {
         names
     }
 
+    /// Existence fingerprint of the themes tree: every preset folder with
+    /// its sorted profile file names. File *contents* deliberately don't
+    /// count — a change here means a folder or profile file was added or
+    /// removed by hand (Explorer, another editor), which is what the
+    /// settings UI watches to refresh its gallery.
+    pub fn themes_fingerprint(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for theme in self.list_themes() {
+            parts.push(format!("{}:{}", theme, self.list_profiles(&theme).join(",")));
+        }
+        parts.join("|")
+    }
+
     /// Remove a custom theme folder (definition + profiles). Not reachable
     /// from the settings UI yet — custom presets are removed by deleting
     /// their folder by hand — but part of the store's tested API.
@@ -651,6 +664,36 @@ mod tests {
         es.trail.width = NumOrExpr::Num(99.0);
         store.ensure_profile("default", "default", &es);
         assert_eq!(store.load_profile("default", "default").unwrap().trail.width, NumOrExpr::Num(1.0));
+    }
+
+    #[test]
+    fn themes_fingerprint_tracks_existence_not_content() {
+        let (store, _dir) = temp_store("fingerprint");
+        let base = store.themes_fingerprint();
+
+        // A profile file added (by hand or by the app) counts…
+        store.save_profile("default", "main", &EffectSettings::default());
+        let with_profile = store.themes_fingerprint();
+        assert_ne!(with_profile, base);
+
+        // …but content edits to an existing file never do.
+        let mut es = EffectSettings::default();
+        es.trail.width = NumOrExpr::Num(9.0);
+        store.save_profile("default", "main", &es);
+        assert_eq!(store.themes_fingerprint(), with_profile);
+
+        // A whole preset folder added, then removed by hand.
+        store.save_theme_def("frost", &ThemeDef::default());
+        let with_theme = store.themes_fingerprint();
+        assert_ne!(with_theme, with_profile);
+        assert!(store.delete_theme("frost"));
+        assert_eq!(store.themes_fingerprint(), with_profile);
+
+        // A profile file deleted by hand: the (now empty) folder itself
+        // remains, so the fingerprint settles on folder-with-no-profiles.
+        assert!(store.delete_profile("default", "main"));
+        assert_eq!(store.themes_fingerprint(), "default:");
+        assert_ne!(store.themes_fingerprint(), with_profile);
     }
 
     #[test]

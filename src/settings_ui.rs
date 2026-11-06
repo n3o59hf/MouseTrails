@@ -89,6 +89,7 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
     let saved = shared.effects.read().unwrap().clone();
     let saved_app = shared.app.read().unwrap().clone();
     let (cards, active_def) = build_cards(&shared);
+    let fs_snapshot = shared.store.themes_fingerprint();
     let app = SettingsApp {
         shared,
         rx,
@@ -113,6 +114,8 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         preset_dialog_name: String::new(),
         preset_dialog_source: None,
         window_visible: true,
+        fs_snapshot,
+        fs_check: std::time::Instant::now(),
     };
 
     let mut options = eframe::NativeOptions {
@@ -224,6 +227,11 @@ struct SettingsApp {
     preset_dialog_source: Option<PresetSource>,
     /// Tracked hide/show state of the window (drives preview animation).
     window_visible: bool,
+    /// Last seen existence fingerprint of the themes tree (folder and
+    /// profile names, not contents). A change means files were added or
+    /// removed by hand and the gallery should rebuild.
+    fs_snapshot: String,
+    fs_check: std::time::Instant,
 }
 
 /// What a new profile starts from, chosen in the create dialog.
@@ -342,6 +350,10 @@ const GALLERY_COLS: usize = 3;
 /// ~3.7 sim-seconds at the fixed 30 fps step: trail fully grown, particles
 /// mid-life, first click blast happened — a lively freeze frame.
 const PREVIEW_FRAMES: u32 = 110;
+/// How often the settings window re-checks the themes folder for preset
+/// folders or profile files added/removed by hand (a few directory scans
+/// of names only — contents don't count).
+const FS_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// All theme ids: built-ins first, then any custom theme folders on disk.
 fn theme_ids(shared: &SharedSettings) -> Vec<String> {
@@ -746,6 +758,22 @@ impl eframe::App for SettingsApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(
             if visible && any_playing { 33 } else { 150 },
         ));
+
+        // Existence watcher: preset folders or profile files added or
+        // removed by hand (Explorer, another editor) refresh the gallery
+        // without a restart. The fingerprint covers names only; content
+        // edits keep their live-tweak flow. egui ticks update() at ≥150 ms
+        // even while the window is hidden, so changes made while the
+        // settings window is closed are caught when it is next drawn, and
+        // the 2 s cadence keeps the directory scans negligible.
+        if self.fs_check.elapsed() >= FS_WATCH_INTERVAL {
+            self.fs_check = std::time::Instant::now();
+            let fp = shared.store.themes_fingerprint();
+            if fp != self.fs_snapshot {
+                self.fs_snapshot = fp;
+                *cards_dirty = true;
+            }
+        }
 
         if *cards_dirty {
             let (c, d) = build_cards(shared);
