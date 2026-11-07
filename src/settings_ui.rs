@@ -396,7 +396,7 @@ fn build_profile_dialog_previews(
 ) -> DialogPreviews {
     let mut items = Vec::new();
     let active_theme = app.theme.clone();
-    let active_profile = active_profile_in(app, &app.theme);
+    let active_profile = store::active_profile_in(app, &app.theme);
     let label = if active_theme == "default" {
         active_profile.clone()
     } else {
@@ -506,11 +506,6 @@ fn build_cards(shared: &SharedSettings) -> (Vec<PreviewCard>, Option<ThemeDef>) 
     (cards, active_def)
 }
 
-/// The profile active for `theme` in `app` ("default" unless recorded).
-fn active_profile_in(app: &AppConfig, theme: &str) -> String {
-    app.profiles.get(theme).cloned().unwrap_or_else(|| store::DEFAULT_PROFILE.into())
-}
-
 /// Deferred profile/preset mutations, applied after the widget pass so the
 /// snapshots can be refreshed before the write-back diff runs.
 #[derive(Debug)]
@@ -559,7 +554,7 @@ fn perform_action(
             // old profile with a newer theme.
             let (previous_theme, previous) = {
                 let app = shared.app.read().unwrap();
-                (app.theme.clone(), active_profile_in(&app, &app.theme))
+                (app.theme.clone(), store::active_profile_in(&app, &app.theme))
             };
             let es = load_or_materialize(shared, &theme, &profile);
             *shared.effects.write().unwrap() = es;
@@ -1147,7 +1142,7 @@ impl eframe::App for SettingsApp {
         // and a rename) stutters on a redirected or AV-scanned profile dir.
         if s != *saved {
             *shared.effects.write().unwrap() = s.clone();
-            let active = active_profile_in(&app, &app.theme);
+            let active = store::active_profile_in(&app, &app.theme);
             if let Some(card) = cards
                 .iter_mut()
                 .find(|c| c.theme == app.theme && c.profile == active)
@@ -1286,7 +1281,7 @@ fn profiles_group(
                 let mut placed = 0;
                 for card in cards {
                     let selected = app.theme == card.theme
-                        && active_profile_in(app, &card.theme) == card.profile;
+                        && store::active_profile_in(app, &card.theme) == card.profile;
                     let resp = gallery_card(ui, card, selected, cell_w);
                     if resp.clicked() && !selected {
                         *action = Some(Action::SwitchProfile(
@@ -1311,7 +1306,7 @@ fn profiles_group(
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let active = active_profile_in(app, &app.theme);
+            let active = store::active_profile_in(app, &app.theme);
             let armed = delete_arm
                 .as_ref()
                 .map(|t| t.elapsed().as_secs() < 4)
@@ -1546,7 +1541,7 @@ fn dialog_body(
                             // highlight it while it is the duplicate source.
                             (Some(DialogSource::Duplicate(t1, p1)), "current") if
                                 t1 == &app.theme
-                                    && p1 == &active_profile_in(app, &app.theme) => true,
+                                    && p1 == &store::active_profile_in(app, &app.theme) => true,
                             _ => false,
                         };
                         let resp = tile(ui, selected, item);
@@ -1554,7 +1549,7 @@ fn dialog_body(
                             if item.key == "current" {
                                 *source = Some(DialogSource::Duplicate(
                                     app.theme.clone(),
-                                    active_profile_in(app, &app.theme),
+                                    store::active_profile_in(app, &app.theme),
                                 ));
                             } else if let Some(preset) = item.key.strip_prefix("preset:") {
                                 *source = Some(DialogSource::Preset(preset.to_string()));

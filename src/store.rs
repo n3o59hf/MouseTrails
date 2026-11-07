@@ -548,8 +548,9 @@ impl SharedSettings {
     }
 }
 
-/// The profile selected for `theme` in `app` ("default" unless recorded).
-fn active_profile_in(app: &AppConfig, theme: &str) -> String {
+/// The profile selected for `theme` in `app` ([`DEFAULT_PROFILE`] unless a
+/// selection is recorded).
+pub fn active_profile_in(app: &AppConfig, theme: &str) -> String {
     app.profiles.get(theme).cloned().unwrap_or_else(|| DEFAULT_PROFILE.into())
 }
 
