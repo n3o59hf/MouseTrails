@@ -212,10 +212,11 @@ struct SettingsApp {
     /// Measured gallery cell width — previews re-render at exactly this
     /// size (updated by the widget pass, applied by the next step loop).
     preview_cell_w: f32,
-    /// Per-preset previews for the create dialog, rendered from preset
-    /// definitions rather than profiles. Rebuilt when the dialog opens.
-    /// Per-dialog preview sets, each sized to its own window.
+    /// The create-profile window's preview tiles: the current profile plus
+    /// one per preset, rebuilt on open. Sized to that dialog's own window.
     profile_dialog: DialogPreviews,
+    /// The new-preset window's preview tiles: the empty slate, presets and
+    /// profiles as snapshot sources. Sized to that dialog's own window.
     preset_dialog: DialogPreviews,
     /// The create-profile dialog state.
     dialog_open: bool,
