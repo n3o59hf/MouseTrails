@@ -15,7 +15,7 @@ use evalexpr::{
     DefaultNumericTypes, EvalexprError, Function, HashMapContext, Node, Value,
 };
 
-use crate::settings::{BubbleCfg, NumOrExpr, SparkleCfg, TrailCfg};
+use crate::settings::NumOrExpr;
 use crate::store::EffectSettings;
 
 /// Expression length cap — keeps parse and eval cost bounded for shared
