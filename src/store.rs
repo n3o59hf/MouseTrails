@@ -520,6 +520,23 @@ impl SharedSettings {
         self.store.save_profile(&theme, &profile, &es);
     }
 
+    /// Persist the current effects only when they differ from what is already
+    /// on disk. Safe to call at shutdown or from any thread: a no-op in the
+    /// common case where the settings window already wrote them.
+    pub fn flush_pending_effects(&self) {
+        let stored = {
+            let app = self.app.read().unwrap();
+            let theme = app.theme.clone();
+            let profile = active_profile_in(&app, &theme);
+            (theme, profile)
+        };
+        let es = self.effects.read().unwrap().clone();
+        if self.store.load_profile(&stored.0, &stored.1).as_ref() == Some(&es) {
+            return;
+        }
+        self.store.save_profile(&stored.0, &stored.1, &es);
+    }
+
     pub fn tray_hint_shown(&self) -> bool {
         self.app.read().unwrap().tray_hint_shown
     }
@@ -868,6 +885,35 @@ mod tests {
         // The theme key itself is matched exactly (ids are lowercase on
         // disk); only the profile name compares case-insensitively.
         assert!(store.prune_app_profiles(&mut app3));
+    }
+
+    #[test]
+    fn flush_pending_effects_writes_only_on_a_real_difference() {
+        let (store, _dir) = super::tests::temp_store("flush");
+        // Seed the active profile so there is something to compare against.
+        store.save_profile("default", "main", &EffectSettings::default());
+        let mut app = AppConfig::default();
+        app.profiles.insert("default".into(), "main".into());
+        let shared = super::SharedSettings {
+            store,
+            effects: RwLock::new(EffectSettings::default()),
+            app: RwLock::new(app),
+            update: Mutex::new(crate::updater::UpdateState::initial()),
+            overlay_hwnd: std::sync::atomic::AtomicIsize::new(0),
+        };
+
+        // Matching memory and disk: nothing is written, so the mtime stands.
+        let path = shared.store.profile_path("default", "main");
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        shared.flush_pending_effects();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before);
+
+        // A debounced edit still in memory gets written.
+        shared.effects.write().unwrap().trail.length_secs = 1.25;
+        shared.flush_pending_effects();
+        let on_disk = shared.store.load_profile("default", "main").unwrap();
+        assert_eq!(on_disk.trail.length_secs, 1.25);
     }
 
     #[test]

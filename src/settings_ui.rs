@@ -116,6 +116,8 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         window_visible: true,
         fs_snapshot,
         fs_check: std::time::Instant::now(),
+        save_pending: false,
+        last_edit: std::time::Instant::now(),
     };
 
     let mut options = eframe::NativeOptions {
@@ -233,6 +235,10 @@ struct SettingsApp {
     /// removed by hand and the gallery should rebuild.
     fs_snapshot: String,
     fs_check: std::time::Instant,
+    /// An effects change is in memory but not yet written to disk, and when
+    /// the last edit landed. Writes are coalesced across a slider drag.
+    save_pending: bool,
+    last_edit: std::time::Instant,
 }
 
 /// What a new profile starts from, chosen in the create dialog.
@@ -355,6 +361,10 @@ const PREVIEW_FRAMES: u32 = 110;
 /// folders or profile files added/removed by hand (a few directory scans
 /// of names only — contents don't count).
 const FS_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long after the last widget edit the profile is written to disk. Long
+/// enough to collapse a slider drag into one write, short enough that a
+/// crash costs at most a fraction of a second of tuning.
+const SETTINGS_SAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// All theme ids: built-ins first, then any custom theme folders on disk.
 fn theme_ids(shared: &SharedSettings) -> Vec<String> {
@@ -768,9 +778,16 @@ impl eframe::App for SettingsApp {
         let any_playing = cards.iter().any(|c| c.played < PREVIEW_FRAMES)
             || profile_dialog.items.iter().any(|i| i.played < PREVIEW_FRAMES)
             || preset_dialog.items.iter().any(|i| i.played < PREVIEW_FRAMES);
-        ctx.request_repaint_after(std::time::Duration::from_millis(
-            if visible && any_playing { 33 } else { 150 },
-        ));
+        // A pending debounced write needs a wake-up even while hidden, or
+        // the edit would sit in memory until something else caused a pass.
+        let repaint_in = if visible && any_playing {
+            std::time::Duration::from_millis(33)
+        } else if self.save_pending {
+            SETTINGS_SAVE_DEBOUNCE
+        } else {
+            std::time::Duration::from_millis(150)
+        };
+        ctx.request_repaint_after(repaint_in);
 
         // Existence watcher: preset folders or profile files added or
         // removed by hand (Explorer, another editor) refresh the gallery
@@ -878,6 +895,13 @@ impl eframe::App for SettingsApp {
             }
             hide_settings_window(ctx, shared);
             self.window_visible = false;
+            // A hidden window gets no further passes, so a debounced write
+            // still in flight would only land on the next open — or never,
+            // if the app exits first. Flush before going dormant.
+            if self.save_pending {
+                shared.save_effects();
+                self.save_pending = false;
+            }
             // Hiding the settings window takes its modal children with it.
             // The explicit Close matters: a hidden window gets no further
             // egui passes, so the flag alone would leave the dialog OS
@@ -1115,16 +1139,14 @@ impl eframe::App for SettingsApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        // Any widget mutation lands in the shared state and on disk BEFORE
-        // deferred actions run: effect settings go to the active theme's
-        // profile file, app knobs to the root config. Writing back first is
-        // what keeps a same-frame tweak + profile switch honest — running
-        // it after the switch would fold old-profile edits into the new
-        // profile's file. The active card's preview replays with the new
-        // settings.
+        // Any widget mutation lands in the shared state immediately, and on
+        // disk shortly after. In-memory state drives the overlay and the
+        // previews, so it updates every frame; the profile file is written
+        // once the edits settle. A drag fires this block on every frame at
+        // 60 Hz, and a write per frame (pretty-printed JSON plus a temp file
+        // and a rename) stutters on a redirected or AV-scanned profile dir.
         if s != *saved {
             *shared.effects.write().unwrap() = s.clone();
-            shared.save_effects();
             let active = active_profile_in(&app, &app.theme);
             if let Some(card) = cards
                 .iter_mut()
@@ -1138,6 +1160,15 @@ impl eframe::App for SettingsApp {
             // live tweaks as well.
             profile_dialog.replay("current", FrameExprs::build(&s));
             *saved = s;
+            self.save_pending = true;
+            self.last_edit = std::time::Instant::now();
+        }
+        // Flush the deferred write once the user stops changing things —
+        // switching profiles or closing the window always flushes first, so
+        // an edit can never be folded into the wrong profile's file.
+        if self.save_pending && self.last_edit.elapsed() >= SETTINGS_SAVE_DEBOUNCE {
+            shared.save_effects();
+            self.save_pending = false;
         }
         if app != *saved_app {
             shared.store.save_app(&app);
@@ -1149,6 +1180,13 @@ impl eframe::App for SettingsApp {
         // the write-back diff compares against is refreshed — otherwise the
         // next frame's stale snapshots would overwrite the switch.
         if let Some(a) = action {
+            // A pending debounced write belongs to the profile that is still
+            // active: flush it before the switch changes which profile that
+            // is, or the edit would be folded into the new one's file.
+            if self.save_pending {
+                shared.save_effects();
+                self.save_pending = false;
+            }
             let structural = matches!(
                 a,
                 Action::NewProfile(..)

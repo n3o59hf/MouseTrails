@@ -651,6 +651,11 @@ impl App {
     }
 
     fn on_destroy(&mut self) {
+        // Last chance to persist an edit the settings window debounced but
+        // never flushed (the user hit Exit mid-drag, for instance). The
+        // settings thread may already be gone, so write from the shared
+        // state directly.
+        self.shared.flush_pending_effects();
         unsafe {
             let _ = KillTimer(self.hwnd, TIMER_ID);
             let mut nid = NOTIFYICONDATAW::default();
