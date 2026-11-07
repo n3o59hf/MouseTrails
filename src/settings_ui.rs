@@ -544,11 +544,13 @@ fn perform_action(
     }
     match action {
         Action::SwitchProfile(theme, profile) => {
-            let previous = {
+            // Both values come from one read lock: re-acquiring between them
+            // could interleave with a switch on another thread and pair the
+            // old profile with a newer theme.
+            let (previous_theme, previous) = {
                 let app = shared.app.read().unwrap();
-                active_profile_in(&app, &app.theme)
+                (app.theme.clone(), active_profile_in(&app, &app.theme))
             };
-            let previous_theme = shared.app.read().unwrap().theme.clone();
             let es = load_or_materialize(shared, &theme, &profile);
             *shared.effects.write().unwrap() = es;
             let mut app = shared.app.write().unwrap();
