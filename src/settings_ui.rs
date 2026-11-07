@@ -1300,6 +1300,18 @@ fn profiles_group(
     });
 }
 
+/// Draw a preview texture at its own pixel size.
+///
+/// Deliberately not sized from the simulation: right after a resize the sim
+/// already holds the new buffer size while the texture still holds the
+/// previous frame, so deriving the size from the sim stretches a stale frame
+/// for one pass. The texture is the thing actually on screen, so take its
+/// dimensions.
+fn preview_image(ui: &mut egui::Ui, tex: &egui::TextureHandle) -> egui::Response {
+    let [w, h] = tex.size();
+    ui.add(egui::Image::new((tex.id(), egui::vec2(w as f32, h as f32))))
+}
+
 /// One gallery tile: preview image on top, profile label below. Returns the
 /// click response for the whole tile.
 fn gallery_card(
@@ -1325,7 +1337,7 @@ fn gallery_card(
             ui.set_min_width(cell_w - 12.0);
             ui.vertical(|ui| {
                 if let Some(tex) = &card.texture {
-                    ui.add(egui::Image::new((tex.id(), egui::vec2(img_w, img_h))));
+                    preview_image(ui, tex);
                 } else {
                     ui.set_min_size(egui::vec2(img_w, img_h));
                 }
@@ -1460,10 +1472,7 @@ fn dialog_body(
                     ui.set_min_width(cell_w - 12.0);
                     ui.vertical(|ui| {
                         if let Some(tex) = &item.texture {
-                            ui.add(egui::Image::new((
-                                tex.id(),
-                                egui::vec2(img_w, img_h),
-                            )));
+                            preview_image(ui, tex);
                         } else {
                             ui.set_min_size(egui::vec2(img_w, img_h));
                         }
@@ -1612,10 +1621,7 @@ fn preset_dialog_body(
                     ui.set_min_width(cell_w - 12.0);
                     ui.vertical(|ui| {
                         if let Some(tex) = &item.texture {
-                            ui.add(egui::Image::new((
-                                tex.id(),
-                                egui::vec2(img_w, img_h),
-                            )));
+                            preview_image(ui, tex);
                         } else {
                             ui.set_min_size(egui::vec2(img_w, img_h));
                         }
