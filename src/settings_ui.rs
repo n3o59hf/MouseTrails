@@ -357,13 +357,7 @@ const FS_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2)
 
 /// All theme ids: built-ins first, then any custom theme folders on disk.
 fn theme_ids(shared: &SharedSettings) -> Vec<String> {
-    let mut ids: Vec<String> = themes::BUILTINS.iter().map(|b| b.id.to_string()).collect();
-    for id in shared.store.list_themes() {
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
-    }
-    ids
+    shared.store.theme_ids()
 }
 
 /// (Re)build the preview cards: one per (preset, profile) pair — the
@@ -585,6 +579,14 @@ fn perform_action(
             let was_active = shared.active_profile(&theme) == profile;
             if !shared.store.delete_profile(&theme, &profile) {
                 return Err(format!("Could not delete profile \u{201C}{}\u{201D}.", profile));
+            }
+            // The file is gone: drop its selection entry so a later profile
+            // reusing the name doesn't inherit a dangling pointer.
+            {
+                let mut app = shared.app.write().unwrap();
+                if shared.store.prune_app_profiles(&mut app) {
+                    shared.store.save_app(&app);
+                }
             }
             if !was_active {
                 return ok(Vec::new());

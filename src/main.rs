@@ -95,7 +95,14 @@ fn main() {
     // Checked before load_app(), which puts a fresh config on disk.
     let first_run = !store::config_exists();
 
-    let app_cfg = store.load_app();
+    let mut app_cfg = store.load_app();
+
+    // Presets and profiles can be deleted behind our back (Explorer, another
+    // editor); a selection pointing at one of them would otherwise linger in
+    // config.json and resume the stale name if the id came back.
+    if store.prune_app_profiles(&mut app_cfg) {
+        store.save_app(&app_cfg);
+    }
 
     // The active profile may not exist yet (fresh install, or a theme whose
     // profile hasn't been materialized): build it from the theme definition

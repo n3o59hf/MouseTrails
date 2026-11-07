@@ -278,27 +278,50 @@ impl Store {
         });
     }
 
-    /// Rename every preset's `default.json` profile to `main.json`. The
-    /// primary profile used to share its name with the default preset,
-    /// which read confusingly once profiles became the selector. Never
-    /// clobbers an existing `main.json`.
-    fn rename_default_profiles(&self) {
-        let mut ids: Vec<String> = ["default", "winter", "christmas"]
+    /// Every theme id the store can see: folders under `themes\` plus the
+    /// embedded built-ins, which need no folder until the user materializes
+    /// them.
+    pub fn theme_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = crate::themes::BUILTINS
             .iter()
-            .map(|s| s.to_string())
+            .map(|b| b.id.to_string())
             .collect();
         for id in self.list_themes() {
             if !ids.contains(&id) {
                 ids.push(id);
             }
         }
-        for id in ids {
+        ids
+    }
+
+    /// Rename every preset's `default.json` profile to `main.json`. The
+    /// primary profile used to share its name with the default preset,
+    /// which read confusingly once profiles became the selector. Never
+    /// clobbers an existing `main.json`.
+    fn rename_default_profiles(&self) {
+        for id in self.theme_ids() {
             let old = self.profile_path(&id, "default");
             let new = self.profile_path(&id, "main");
             if old.exists() && !new.exists() {
                 let _ = std::fs::rename(&old, &new);
             }
         }
+    }
+
+    /// Drop `profiles` entries that no longer point at a real preset and
+    /// profile: deleted presets, deleted or renamed profiles, and themes
+    /// removed by hand. Without this the root config keeps growing stale
+    /// keys, and re-creating a preset under a previously-used id would
+    /// silently resume a profile name the user has since deleted.
+    ///
+    /// Profile names are compared case-insensitively, like NTFS.
+    pub fn prune_app_profiles(&self, app: &mut AppConfig) -> bool {
+        let before = app.profiles.len();
+        let ids = self.theme_ids();
+        app.profiles.retain(|theme, profile| {
+            ids.iter().any(|t| t == theme) && self.profile_exists(theme, profile)
+        });
+        app.profiles.len() != before
     }
 
     // -- effect profiles ----------------------------------------------------
@@ -800,6 +823,51 @@ mod tests {
         .unwrap();
         assert_eq!(bak, "{ truncated !!!");
         assert!(!store.profile_path("default", "cozy").exists(), "file moved aside");
+    }
+
+    #[test]
+    fn prune_app_profiles_drops_dangling_selections() {
+        let (store, _dir) = temp_store("prune");
+        store.save_profile("winter", "main", &EffectSettings::default());
+        store.save_profile("winter", "cozy", &EffectSettings::default());
+        // A custom preset on disk with its primary profile materialized.
+        store.save_theme_def("frost", &ThemeDef::default());
+        store.save_profile("frost", "main", &EffectSettings::default());
+
+        let mut app = AppConfig::default();
+        // A deleted profile's entry goes; entries for real profiles stay.
+        app.profiles.insert("winter".into(), "gone".into());
+        app.profiles.insert("frost".into(), "main".into());
+        assert!(store.prune_app_profiles(&mut app));
+        assert_eq!(app.profiles.get("winter"), None);
+        assert!(app.profiles.contains_key("frost"));
+
+        // Selecting a surviving profile is kept as-is.
+        app.profiles.insert("winter".into(), "main".into());
+        assert!(!store.prune_app_profiles(&mut app));
+        assert_eq!(app.profiles.get("winter").map(String::as_str), Some("main"));
+
+        // Re-running on an already-pruned config is a no-op, so callers can
+        // gate their save on the return value.
+        assert!(!store.prune_app_profiles(&mut app));
+
+        // A preset folder deleted by hand takes its entry with it; the
+        // built-ins survive on their own with no folder.
+        let mut app2 = AppConfig::default();
+        app2.profiles.insert("ghost".into(), "main".into());
+        app2.profiles.insert("christmas".into(), "main".into());
+        assert!(store.prune_app_profiles(&mut app2));
+        assert!(!app2.profiles.contains_key("ghost"));
+        assert!(!app2.profiles.contains_key("christmas"), "no profile on disk");
+        assert_eq!(store.theme_ids()[0], "default", "built-ins come first");
+
+        // Stale-but-real themes keep their entry even with capitalization
+        // differences, matching NTFS.
+        let mut app3 = AppConfig::default();
+        app3.profiles.insert("WINTER".into(), "MAIN".into());
+        // The theme key itself is matched exactly (ids are lowercase on
+        // disk); only the profile name compares case-insensitively.
+        assert!(store.prune_app_profiles(&mut app3));
     }
 
     #[test]
