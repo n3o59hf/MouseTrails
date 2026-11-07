@@ -1470,13 +1470,7 @@ fn dialog_body(
                             ui.set_min_size(egui::vec2(img_w, img_h));
                         }
                         ui.add_space(2.0);
-                        if item.key == "new-preset" {
-                            ui.label(
-                                egui::RichText::new(&item.title).strong().size(20.0),
-                            );
-                        } else {
-                            ui.label(egui::RichText::new(&item.title).strong());
-                        }
+                        ui.label(egui::RichText::new(&item.title).strong());
                         ui.label(
                             egui::RichText::new(&item.sub)
                                 .small()
@@ -1628,13 +1622,7 @@ fn preset_dialog_body(
                             ui.set_min_size(egui::vec2(img_w, img_h));
                         }
                         ui.add_space(2.0);
-                        if item.key == "preset:" {
-                            ui.label(
-                                egui::RichText::new(&item.title).strong().size(20.0),
-                            );
-                        } else {
-                            ui.label(egui::RichText::new(&item.title).strong());
-                        }
+                        ui.label(egui::RichText::new(&item.title).strong());
                         ui.label(
                             egui::RichText::new(&item.sub)
                                 .small()
