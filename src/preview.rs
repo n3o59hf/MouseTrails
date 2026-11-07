@@ -42,8 +42,10 @@ impl ThemePreview {
         }
     }
 
-    /// Restart the animation from the beginning (parameter change). The last
-    /// rendered frame stays on screen until the next step overwrites it.
+    /// Restart the animation from the beginning (parameter change), dropping
+    /// the rendered frame so no stale picture outlives the state it depicts.
+    /// Callers also rewind their frame counter so the next widget pass steps
+    /// a fresh image instead of showing the placeholder.
     pub fn reset(&mut self) {
         self.effects = Effects::new();
         self.t = 0.0;
@@ -51,6 +53,7 @@ impl ThemePreview {
         self.mouse = (w * 0.5, h * 0.5);
         self.vel = (0.0, 0.0);
         self.next_click = 2.0;
+        self.image = None;
     }
 
     /// Advance one fixed step, resolving the theme's expressions against the
@@ -130,8 +133,9 @@ impl ThemePreview {
         self.pixmap = tiny_skia::Pixmap::new(w, h).expect("preview pixmap");
         self.mouse = (w as f32 * 0.5, h as f32 * 0.5);
         self.vel = (0.0, 0.0);
-        // The old texture has the wrong dimensions; the caller replays the
-        // animation so the next step fills the new size.
+        // The old image has the wrong dimensions: drop it and report the
+        // change so the caller replays the animation into the new size.
+        self.image = None;
         true
     }
 }
