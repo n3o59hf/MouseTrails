@@ -15,7 +15,7 @@ use evalexpr::{
     DefaultNumericTypes, EvalexprError, Function, HashMapContext, Node, Value,
 };
 
-use crate::settings::NumOrExpr;
+use crate::settings::{BubbleCfg, NumOrExpr, SparkleCfg, TrailCfg};
 use crate::store::EffectSettings;
 
 /// Expression length cap — keeps parse and eval cost bounded for shared
@@ -74,18 +74,22 @@ impl Field {
     }
 
     /// Safe fallback value when the expression can't be parsed or evaluated:
-    /// the field's own configured default, read from `EffectSettings`.
+    /// the field's own configured default.
+    ///
+    /// Called from `resolve` on the per-frame path (twice for a field that
+    /// evaluates to NaN), so these are plain literals — building an
+    /// `EffectSettings` here would allocate its `Vec` palettes every call.
+    /// `defaults_match_settings` keeps them in step with the struct defaults.
     fn default_value(self) -> f32 {
-        let d = EffectSettings::default();
         match self {
-            Field::TrailWidth => d.trail.width.value(),
-            Field::TrailHueSpeed => d.trail.hue_speed.value(),
-            Field::BubbleRate => d.bubbles.rate.value(),
-            Field::BubbleBuoyancy => d.bubbles.buoyancy.value(),
-            Field::BubbleWobble => d.bubbles.wobble.value(),
-            Field::BubbleSpin => d.bubbles.spin.value(),
-            Field::SparkRate => d.sparkles.rate.value(),
-            Field::SparkGravity => d.sparkles.gravity.value(),
+            Field::TrailWidth => 10.0,
+            Field::TrailHueSpeed => 1.0,
+            Field::BubbleRate => 9.0,
+            Field::BubbleBuoyancy => 85.0,
+            Field::BubbleWobble => 30.0,
+            Field::BubbleSpin => 0.0,
+            Field::SparkRate => 40.0,
+            Field::SparkGravity => -30.0,
         }
     }
 
@@ -254,6 +258,21 @@ mod tests {
         let mut es = EffectSettings::default();
         es.bubbles.buoyancy = value;
         es
+    }
+
+    #[test]
+    fn defaults_match_settings() {
+        // `default_value` hard-codes the fallbacks to stay allocation-free on
+        // the per-frame path; this pins them to the real struct defaults so a
+        // tune-up in `settings` can't silently desynchronize them.
+        let es = EffectSettings::default();
+        for field in Field::ALL {
+            assert_eq!(
+                field.default_value(),
+                field.get(&es).value(),
+                "{field:?} fallback drifted from the settings default"
+            );
+        }
     }
 
     #[test]
