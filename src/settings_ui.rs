@@ -596,25 +596,21 @@ fn perform_action(
             // remain anywhere, re-materialize this theme's primary profile
             // — otherwise the selection dangles and the next tweak would
             // silently resurrect the deleted file under its old name.
+            // Both branches go through load_or_materialize so a missing
+            // profile is built the same way a switch builds it, instead of
+            // one path using factory defaults and the other the current
+            // settings.
             let mut remaining: Vec<(String, String)> = Vec::new();
             for t in theme_ids(shared) {
                 for pr in shared.store.list_profiles(&t) {
                     remaining.push((t.clone(), pr.clone()));
                 }
             }
-            let (next_theme, next_profile, es) = match remaining.first() {
-                Some((t, p)) => {
-                    let es = shared.store.load_profile(t, p).unwrap_or_else(|| {
-                        themes::materialize_profile(&shared.store, t)
-                    });
-                    (t.clone(), p.clone(), es)
-                }
-                None => {
-                    let es = themes::materialize_profile(&shared.store, &theme);
-                    shared.store.save_profile(&theme, store::DEFAULT_PROFILE, &es);
-                    (theme.clone(), store::DEFAULT_PROFILE.to_string(), es)
-                }
-            };
+            let (next_theme, next_profile) = remaining
+                .first()
+                .cloned()
+                .unwrap_or_else(|| (theme.clone(), store::DEFAULT_PROFILE.to_string()));
+            let es = load_or_materialize(shared, &next_theme, &next_profile);
             *shared.effects.write().unwrap() = es;
             let mut app = shared.app.write().unwrap();
             app.theme = next_theme.clone();
