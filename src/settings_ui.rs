@@ -475,9 +475,11 @@ fn build_cards(shared: &SharedSettings) -> (Vec<PreviewCard>, Option<ThemeDef>) 
             active_def = Some(def.clone());
         }
         for profile in shared.store.list_profiles(&theme) {
+            // Plain load, not `load_profile_for_use`: this only previews and
+            // never overwrites, so renaming an unreadable file aside here
+            // would be a surprise side effect. The card shows the definition
+            // fallback until a switch/duplicate backs the file up.
             let es = shared.store.load_profile(&theme, &profile).unwrap_or_else(|| {
-                // Not materialized yet: preview the definition over factory
-                // defaults without writing anything.
                 themes::apply_def(&def, &EffectSettings::default())
             });
             let label = if theme == "default" {
@@ -522,9 +524,10 @@ enum Action {
 }
 
 /// Load `theme`'s `profile`, materializing it (definition over the current
-/// settings) when the file doesn't exist yet.
+/// settings) when the file doesn't exist yet or can't be read. An
+/// unreadable file is backed up as `.corrupt` before being replaced.
 fn load_or_materialize(shared: &SharedSettings, theme: &str, profile: &str) -> EffectSettings {
-    if let Some(es) = shared.store.load_profile(theme, profile) {
+    if let Some(es) = shared.store.load_profile_for_use(theme, profile) {
         return es;
     }
     let current = shared.effects.read().unwrap().clone();
@@ -622,9 +625,12 @@ fn perform_action(
             if shared.store.profile_exists(&src_theme, &id) {
                 return Err(format!("A profile named \u{201C}{}\u{201D} already exists.", id));
             }
-            let es = shared.store.load_profile(&src_theme, &src_profile).ok_or_else(|| {
+            // Back up an unreadable source before the copy replaces it: the
+            // duplicate is written under the same preset, and a corrupt
+            // source must not be the excuse to lose it.
+            let es = shared.store.load_profile_for_use(&src_theme, &src_profile).ok_or_else(|| {
                 format!(
-                    "Profile \u{201C}{}\u{201D} no longer exists.",
+                    "Profile \u{201C}{}\u{201D} no longer exists or is unreadable.",
                     src_profile
                 )
             })?;

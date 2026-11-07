@@ -312,6 +312,22 @@ impl Store {
         write_json(&self.profile_path(theme, profile), es);
     }
 
+    /// Load a profile for use, preserving an unreadable one first.
+    ///
+    /// `None` means "no usable profile file" — either it's missing (first
+    /// use) or it exists but doesn't parse. In the latter case the caller is
+    /// about to overwrite it, so keep a `.corrupt` copy: a truncated write
+    /// must never quietly eat the user's tuning. Every path that
+    /// materializes a missing profile goes through here rather than
+    /// `load_profile`, so the backup can't be forgotten.
+    pub fn load_profile_for_use(&self, theme: &str, profile: &str) -> Option<EffectSettings> {
+        let es = self.load_profile(theme, profile);
+        if es.is_none() {
+            self.back_up_corrupt_profile(theme, profile);
+        }
+        es
+    }
+
     /// Write `es` only when the profile file doesn't exist yet — used to
     /// materialize a theme's first profile without clobbering user edits.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -752,6 +768,38 @@ mod tests {
         assert!(store.load_profile("default", "cozy").is_some());
         // The backup doesn't show up as a profile.
         assert_eq!(store.list_profiles("default"), vec!["cozy".to_string()]);
+    }
+
+    #[test]
+    fn load_profile_for_use_backs_up_unreadable_files_only() {
+        let (store, _dir) = temp_store("load-for-use");
+
+        // Missing file: nothing to preserve, nothing created.
+        assert!(store.load_profile_for_use("default", "absent").is_none());
+        assert!(!store.profile_path("default", "absent").exists());
+        assert!(!store
+            .profile_path("default", "absent")
+            .with_extension("json.corrupt")
+            .exists());
+
+        // Readable file: returned as-is, no backup appears.
+        store.save_profile("default", "cozy", &EffectSettings::default());
+        assert!(store.load_profile_for_use("default", "cozy").is_some());
+        assert!(!store
+            .profile_path("default", "cozy")
+            .with_extension("json.corrupt")
+            .exists());
+
+        // Unreadable file: backed up in the same call, so a caller that
+        // immediately overwrites it can't lose the original.
+        std::fs::write(store.profile_path("default", "cozy"), "{ truncated !!!").unwrap();
+        assert!(store.load_profile_for_use("default", "cozy").is_none());
+        let bak = std::fs::read_to_string(
+            store.profile_path("default", "cozy").with_extension("json.corrupt"),
+        )
+        .unwrap();
+        assert_eq!(bak, "{ truncated !!!");
+        assert!(!store.profile_path("default", "cozy").exists(), "file moved aside");
     }
 
     #[test]

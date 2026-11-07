@@ -106,11 +106,9 @@ fn main() {
         .get(&app_cfg.theme)
         .cloned()
         .unwrap_or_else(|| store::DEFAULT_PROFILE.to_string());
-    let effects = store.load_profile(&app_cfg.theme, &profile).unwrap_or_else(|| {
-        // Unreadable or corrupt (a missing file just doesn't exist yet):
-        // keep a .corrupt copy before replacing it with the theme's
-        // definition, so a truncated write never eats the user's tuning.
-        store.back_up_corrupt_profile(&app_cfg.theme, &profile);
+    let effects = store.load_profile_for_use(&app_cfg.theme, &profile).unwrap_or_else(|| {
+        // Missing (first use) or unreadable — the latter is backed up as
+        // `.corrupt` by load_profile_for_use before this rewrite.
         let d = themes::materialize_profile(&store, &app_cfg.theme);
         store.save_profile(&app_cfg.theme, &profile, &d);
         d
