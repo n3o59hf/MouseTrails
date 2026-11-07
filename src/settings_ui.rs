@@ -705,7 +705,10 @@ impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.updates += 1;
         if std::env::var("MOUSETRAILS_DEBUG").is_ok() && self.updates % 100 == 0 {
-            crate::overlay::debug_log(format!("ui: update #{} visible={}", self.updates, true));
+            crate::overlay::debug_log(format!(
+                "ui: update #{} visible={}",
+                self.updates, self.window_visible
+            ));
         }
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
