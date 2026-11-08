@@ -801,6 +801,14 @@ impl eframe::App for SettingsApp {
         }
 
         if *cards_dirty {
+            // The rebuild re-reads the cards from disk, so a debounced edit
+            // still in memory must land first — otherwise (watcher firing
+            // inside the debounce window) the active card previews the
+            // pre-edit look and nothing re-reads it after the flush.
+            if self.save_pending {
+                shared.save_effects();
+                self.save_pending = false;
+            }
             let (c, d) = build_cards(shared);
             *cards = c;
             *active_def = d;
