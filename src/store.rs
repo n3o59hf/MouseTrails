@@ -522,19 +522,21 @@ impl SharedSettings {
 
     /// Persist the current effects only when they differ from what is already
     /// on disk. Safe to call at shutdown or from any thread: a no-op in the
-    /// common case where the settings window already wrote them.
+    /// common case where the settings window already wrote them. Effects
+    /// and app are snapshotted under both read locks (effects first, the
+    /// writer order — same as [`Self::save_effects`]) so a concurrent
+    /// switch can't land between the reads and persist the new profile's
+    /// effects into the old profile's file.
     pub fn flush_pending_effects(&self) {
-        let stored = {
-            let app = self.app.read().unwrap();
-            let theme = app.theme.clone();
-            let profile = active_profile_in(&app, &theme);
-            (theme, profile)
-        };
         let es = self.effects.read().unwrap().clone();
-        if self.store.load_profile(&stored.0, &stored.1).as_ref() == Some(&es) {
+        let app = self.app.read().unwrap();
+        let theme = app.theme.clone();
+        let profile = active_profile_in(&app, &theme);
+        drop(app);
+        if self.store.load_profile(&theme, &profile).as_ref() == Some(&es) {
             return;
         }
-        self.store.save_profile(&stored.0, &stored.1, &es);
+        self.store.save_profile(&theme, &profile, &es);
     }
 
     pub fn tray_hint_shown(&self) -> bool {
