@@ -102,6 +102,8 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         cards_dirty: false,
         active_def,
         theme_err: None,
+        dialog_err: None,
+        preset_err: None,
         delete_arm: None,
         preview_cell_w: 190.0,
         profile_dialog: DialogPreviews::build(Vec::new()),
@@ -206,8 +208,15 @@ struct SettingsApp {
     cards_dirty: bool,
     /// The active theme's definition — supplies slider bounds overrides.
     active_def: Option<ThemeDef>,
-    /// Error from the last profile/preset action, shown until it clears.
+    /// Error from the last gallery-level action (switch, delete, open
+    /// folder), shown in the Profiles group.
     theme_err: Option<String>,
+    /// Error from the last failed create in the new-profile dialog. Kept
+    /// apart from `theme_err` because the surfaces can be open at once,
+    /// modally stacked — a failure in one must not surface inside another.
+    dialog_err: Option<String>,
+    /// Same for the new-preset window.
+    preset_err: Option<String>,
     /// Armed delete-profile button: first click arms, second (within 4s)
     /// confirms.
     delete_arm: Option<std::time::Instant>,
@@ -749,6 +758,8 @@ impl eframe::App for SettingsApp {
             cards_dirty,
             active_def,
             theme_err,
+            dialog_err,
+            preset_err,
             preview_cell_w,
             profile_dialog,
             preset_dialog,
@@ -911,6 +922,8 @@ impl eframe::App for SettingsApp {
             // windows orphaned on screen.
             *dialog_open = false;
             *preset_dialog_open = false;
+            *dialog_err = None;
+            *preset_err = None;
             for id in ["new-profile-dialog", "new-preset-dialog"] {
                 ctx.send_viewport_cmd_to(
                     egui::ViewportId(egui::Id::new(id)),
@@ -1073,7 +1086,7 @@ impl eframe::App for SettingsApp {
                             shared,
                             &app,
                             profile_dialog,
-                            theme_err,
+                            dialog_err,
                             dialog_name,
                             dialog_source,
                             preset_dialog_open,
@@ -1089,6 +1102,8 @@ impl eframe::App for SettingsApp {
             );
             if close_requested {
                 *dialog_open = false;
+                // Cancel/X acknowledges any error this dialog was showing.
+                *dialog_err = None;
             }
         }
 
@@ -1109,7 +1124,7 @@ impl eframe::App for SettingsApp {
                             vp_ctx,
                             shared,
                             preset_dialog,
-                            theme_err,
+                            preset_err,
                             preset_dialog_name,
                             preset_dialog_source,
                             &mut action,
@@ -1119,6 +1134,7 @@ impl eframe::App for SettingsApp {
             );
             if close_requested {
                 *preset_dialog_open = false;
+                *preset_err = None;
             }
         }
 
@@ -1207,6 +1223,8 @@ impl eframe::App for SettingsApp {
             match perform_action(shared, a) {
                 Ok(refresh) => {
                     *theme_err = None;
+                    *dialog_err = None;
+                    *preset_err = None;
                     if from_profile_dialog {
                         *dialog_open = false;
                         dialog_name.clear();
@@ -1240,7 +1258,18 @@ impl eframe::App for SettingsApp {
                         *cards_dirty = true;
                     }
                 }
-                Err(e) => *theme_err = Some(e),
+                Err(e) => {
+                    // Route the error to the surface that owns the action:
+                    // the dialogs can be open at once (modally stacked), and
+                    // a failure in one must not surface inside the others.
+                    if from_profile_dialog {
+                        *dialog_err = Some(e);
+                    } else if from_preset_dialog {
+                        *preset_err = Some(e);
+                    } else {
+                        *theme_err = Some(e);
+                    }
+                }
             }
             s = shared.effects.read().unwrap().clone();
             app = shared.app.read().unwrap().clone();
@@ -1436,7 +1465,7 @@ fn dialog_body(
     _shared: &SharedSettings,
     app: &AppConfig,
     previews: &mut DialogPreviews,
-    theme_err: &mut Option<String>,
+    dialog_err: &mut Option<String>,
     name: &mut String,
     source: &mut Option<DialogSource>,
     open_preset_dialog: &mut bool,
@@ -1469,7 +1498,7 @@ fn dialog_body(
                 *source = None;
                 close = true;
             }
-            if let Some(err) = &*theme_err {
+            if let Some(err) = &*dialog_err {
                 ui.colored_label(egui::Color32::RED, err.clone());
             }
         });
@@ -1597,7 +1626,7 @@ fn preset_dialog_body(
     vp_ctx: &egui::Context,
     _shared: &SharedSettings,
     previews: &mut DialogPreviews,
-    theme_err: &mut Option<String>,
+    preset_err: &mut Option<String>,
     name: &mut String,
     source: &mut Option<PresetSource>,
     action: &mut Option<Action>,
@@ -1620,7 +1649,7 @@ fn preset_dialog_body(
                 *source = None;
                 close = true;
             }
-            if let Some(err) = &*theme_err {
+            if let Some(err) = &*preset_err {
                 ui.colored_label(egui::Color32::RED, err.clone());
             }
         });
