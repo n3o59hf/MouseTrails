@@ -41,6 +41,11 @@ jobs:
           "$hash  MouseTrails.exe" | Out-File -Encoding ascii target/release/MouseTrails.exe.sha256
           Get-Content target/release/MouseTrails.exe.sha256
 
+      - name: Stamp build time
+        id: when
+        run: echo "utc=$(date -u '+%Y-%m-%d %H:%M UTC')" >> "$GITHUB_OUTPUT"
+        shell: bash
+
       - name: Move "latest" tag to this commit
         run: |
           git config user.name "github-actions[bot]"
@@ -54,7 +59,7 @@ jobs:
           tag_name: latest
           name: Latest build
           body: |
-            Automated build of `main` @ ${{ github.sha }}.
+            Automated build of `main` @ ${{ github.sha }} — built ${{ steps.when.outputs.utc }}.
 
             Download **MouseTrails.exe** — a single self-contained file
             (static CRT, icon embedded). No installer needed: copy it
@@ -66,5 +71,16 @@ jobs:
             target/release/MouseTrails.exe
             target/release/MouseTrails.exe.sha256
           fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # PATCHing a release never changes its publish date, so GitHub would
+      # keep showing the original "published X months ago". Converting the
+      # release to a draft and publishing it again re-stamps the date while
+      # keeping the same release, tag, and assets.
+      - name: Re-stamp the release publish date
+        run: |
+          gh release edit latest --draft
+          gh release edit latest --draft=false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
