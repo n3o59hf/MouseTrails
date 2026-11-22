@@ -108,9 +108,9 @@ fn main() {
             };
             if !focused {
                 let text = if want_settings {
-                    w!("MouseTrails is already running.\n\nIts settings window could not be brought to the front \u{2014} look for the rainbow icon near the clock and click it to open Settings.")
+                    w!("MouseTrails is already running.\n\nIts settings window could not be brought to the front \u{2014} look for the rainbow icon near the clock and double-click it to open Settings.")
                 } else {
-                    w!("MouseTrails is already running.\n\nLook for its rainbow icon near the clock — click it to open Settings, right-click for more options.")
+                    w!("MouseTrails is already running.\n\nLook for its rainbow icon near the clock — left-click toggles the trails, double-click opens Settings, right-click for more options.")
                 };
                 unsafe {
                     let _ = MessageBoxW(

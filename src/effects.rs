@@ -14,6 +14,10 @@ pub struct Ctx<'a> {
     pub vel: (f32, f32),
     pub clicked: bool,
     pub moving: f32,
+    /// While false the trails are toggled off from the tray: effects must
+    /// not spawn anything new (and clicks must not disturb what's alive),
+    /// but everything already on screen keeps evolving until it ages out.
+    pub spawning: bool,
     pub cfg: &'a EffectSettings,
     pub screen: (f32, f32),
 }
@@ -355,30 +359,38 @@ impl Effect for Trail {
 
         self.hue = (self.hue + ctx.dt * c.hue_speed.value() * 0.5).rem_euclid(1.0);
 
-        // Consume the sampler's raw cursor positions, interpolating each hop
-        // down to SPACING_PX so fast movement stays a smooth, dense path.
-        let mut prev: Option<TrailPoint> = self.pts.back().cloned();
-        for s in self.pending.drain(..) {
-            match prev {
-                None => self.pts.push_back(s),
-                Some(p) => {
-                    let d = ((s.x - p.x).powi(2) + (s.y - p.y).powi(2)).sqrt();
-                    if d > TELEPORT_PX {
-                        self.pts.push_back(s);
-                    } else if d > 0.05 {
-                        let steps = ((d / SPACING_PX).ceil() as u32).clamp(1, 64);
-                        for i in 1..=steps {
-                            let f = i as f32 / steps as f32;
-                            self.pts.push_back(TrailPoint {
-                                x: p.x + (s.x - p.x) * f,
-                                y: p.y + (s.y - p.y) * f,
-                                t: p.t + (s.t - p.t) * f,
-                            });
+        if ctx.spawning {
+            // Consume the sampler's raw cursor positions, interpolating each
+            // hop down to SPACING_PX so fast movement stays a smooth, dense
+            // path.
+            let mut prev: Option<TrailPoint> = self.pts.back().cloned();
+            for s in self.pending.drain(..) {
+                match prev {
+                    None => self.pts.push_back(s),
+                    Some(p) => {
+                        let d = ((s.x - p.x).powi(2) + (s.y - p.y).powi(2)).sqrt();
+                        if d > TELEPORT_PX {
+                            self.pts.push_back(s);
+                        } else if d > 0.05 {
+                            let steps = ((d / SPACING_PX).ceil() as u32).clamp(1, 64);
+                            for i in 1..=steps {
+                                let f = i as f32 / steps as f32;
+                                self.pts.push_back(TrailPoint {
+                                    x: p.x + (s.x - p.x) * f,
+                                    y: p.y + (s.y - p.y) * f,
+                                    t: p.t + (s.t - p.t) * f,
+                                });
+                            }
                         }
                     }
                 }
+                prev = Some(s);
             }
-            prev = Some(s);
+        } else {
+            // Toggled off mid-stream: drop whatever was queued so re-enabling
+            // doesn't replay a stale path. Points already on the ribbon age
+            // out below.
+            self.pending.clear();
         }
 
         let len = c.length_secs.max(0.05);
@@ -750,60 +762,63 @@ impl Effect for Bubbles {
         }
         let fade = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
 
-        self.acc += c.rate.value().max(0.0) * ctx.dt * self.speed_mod * fade;
-        let momentum = c.momentum.clamp(0.0, 1.0);
-        // Profile cap, with an absolute ceiling so a hand-edited profile
-        // can't flood the frame budget.
-        let cap = ctx.cfg.limits.bubbles.min(1000) as usize;
-        while self.acc >= 1.0 {
-            self.acc -= 1.0;
-            if self.list.len() < cap {
-                let color = self.next_color(&c.palette);
-                let dir = if rnd01() < 0.5 { -1.0 } else { 1.0 };
-                let speed = (ctx.vel.0 * ctx.vel.0 + ctx.vel.1 * ctx.vel.1).sqrt();
-                self.list.push(Bubble {
-                    x: ctx.mouse.0 + rnd_range(-8.0, 8.0),
-                    y: ctx.mouse.1 + rnd_range(-8.0, 8.0),
-                    vx: ctx.vel.0 * momentum + rnd_range(-60.0, 60.0),
-                    vy: ctx.vel.1 * momentum + rnd_range(-60.0, 20.0),
-                    r: (c.size * rnd_range(0.6, 1.3)).max(2.0),
-                    color,
-                    born: ctx.now,
-                    life: c.lifetime * rnd_range(0.7, 1.2),
-                    wob_phase: rnd01() * std::f32::consts::TAU,
-                    wob_freq: rnd_range(1.5, 3.2),
-                    rot: rnd01() * std::f32::consts::TAU,
-                    // Snowflakes tumble at the theme rate in a random
-                    // direction; ornaments pick up spin from cursor speed,
-                    // capped so a violent flick can't go dizzy.
-                    spin: match c.shape {
-                        BubbleShape::Snowflake => c.spin.value() * dir,
-                        BubbleShape::Ornament => {
-                            (speed * ORNAMENT_SPIN_PER_SPEED * c.spin.value().max(0.0)).min(12.0) * dir
-                        }
-                        BubbleShape::Bubble => 0.0,
-                    },
-                    variant: (rnd01() * SNOWFLAKE_VARIANTS as f32) as u32,
-                });
-            } else {
-                self.acc = 0.0;
+        if ctx.spawning {
+            self.acc += c.rate.value().max(0.0) * ctx.dt * self.speed_mod * fade;
+            let momentum = c.momentum.clamp(0.0, 1.0);
+            // Profile cap, with an absolute ceiling so a hand-edited profile
+            // can't flood the frame budget.
+            let cap = ctx.cfg.limits.bubbles.min(1000) as usize;
+            while self.acc >= 1.0 {
+                self.acc -= 1.0;
+                if self.list.len() < cap {
+                    let color = self.next_color(&c.palette);
+                    let dir = if rnd01() < 0.5 { -1.0 } else { 1.0 };
+                    let speed = (ctx.vel.0 * ctx.vel.0 + ctx.vel.1 * ctx.vel.1).sqrt();
+                    self.list.push(Bubble {
+                        x: ctx.mouse.0 + rnd_range(-8.0, 8.0),
+                        y: ctx.mouse.1 + rnd_range(-8.0, 8.0),
+                        vx: ctx.vel.0 * momentum + rnd_range(-60.0, 60.0),
+                        vy: ctx.vel.1 * momentum + rnd_range(-60.0, 20.0),
+                        r: (c.size * rnd_range(0.6, 1.3)).max(2.0),
+                        color,
+                        born: ctx.now,
+                        life: c.lifetime * rnd_range(0.7, 1.2),
+                        wob_phase: rnd01() * std::f32::consts::TAU,
+                        wob_freq: rnd_range(1.5, 3.2),
+                        rot: rnd01() * std::f32::consts::TAU,
+                        // Snowflakes tumble at the theme rate in a random
+                        // direction; ornaments pick up spin from cursor speed,
+                        // capped so a violent flick can't go dizzy.
+                        spin: match c.shape {
+                            BubbleShape::Snowflake => c.spin.value() * dir,
+                            BubbleShape::Ornament => {
+                                (speed * ORNAMENT_SPIN_PER_SPEED * c.spin.value().max(0.0)).min(12.0)
+                                    * dir
+                            }
+                            BubbleShape::Bubble => 0.0,
+                        },
+                        variant: (rnd01() * SNOWFLAKE_VARIANTS as f32) as u32,
+                    });
+                } else {
+                    self.acc = 0.0;
+                }
             }
-        }
 
-        // Clicking blasts bubbles outward from the click point like a
-        // shockwave — tapered with distance, with a little angular jitter so
-        // the scatter looks organic.
-        if ctx.clicked {
-            for b in self.list.iter_mut() {
-                let dx = b.x - ctx.mouse.0;
-                let dy = b.y - ctx.mouse.1;
-                let d = (dx * dx + dy * dy).sqrt();
-                if d < SHOCKWAVE_RADIUS {
-                    let fall = 1.0 - d / SHOCKWAVE_RADIUS;
-                    let mag = 250.0 + 950.0 * fall;
-                    let ang = dy.atan2(dx) + rnd_range(-0.35, 0.35);
-                    b.vx += ang.cos() * mag;
-                    b.vy += ang.sin() * mag;
+            // Clicking blasts bubbles outward from the click point like a
+            // shockwave — tapered with distance, with a little angular jitter
+            // so the scatter looks organic.
+            if ctx.clicked {
+                for b in self.list.iter_mut() {
+                    let dx = b.x - ctx.mouse.0;
+                    let dy = b.y - ctx.mouse.1;
+                    let d = (dx * dx + dy * dy).sqrt();
+                    if d < SHOCKWAVE_RADIUS {
+                        let fall = 1.0 - d / SHOCKWAVE_RADIUS;
+                        let mag = 250.0 + 950.0 * fall;
+                        let ang = dy.atan2(dx) + rnd_range(-0.35, 0.35);
+                        b.vx += ang.cos() * mag;
+                        b.vy += ang.sin() * mag;
+                    }
                 }
             }
         }
@@ -1157,75 +1172,77 @@ impl Effect for Sparkles {
         } else {
             self.idle += ctx.dt;
         }
-        let ramp = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
-        if ramp > 0.0 {
-            self.acc += c.rate.value().max(0.0) * ctx.dt * ramp;
-        }
-        let momentum = c.momentum.clamp(0.0, 1.0);
-        // Profile cap (children share the pool), with an absolute ceiling
-        // so a hand-edited profile can't flood the frame budget.
-        let cap = ctx.cfg.limits.sparkles.min(3000) as usize;
-        while self.acc >= 1.0 {
-            self.acc -= 1.0;
-            if self.list.len() < cap {
-                let ang = rnd01() * std::f32::consts::TAU;
-                let speed = rnd_range(30.0, 160.0);
-                let color = self.next_color(&c.color, &c.palette);
-                self.list.push(Spark {
-                    x: ctx.mouse.0 + rnd_range(-6.0, 6.0),
-                    y: ctx.mouse.1 + rnd_range(-6.0, 6.0),
-                    vx: ang.cos() * speed + ctx.vel.0 * momentum,
-                    vy: ang.sin() * speed + ctx.vel.1 * momentum,
-                    born: ctx.now,
-                    life: c.lifetime * rnd_range(0.6, 1.25),
-                    size: c.size * rnd_range(0.6, 1.4),
-                    phase: rnd01() * std::f32::consts::TAU,
-                    freq: rnd_range(6.0, 14.0),
-                    color,
-                    gen: 0,
-                    emit_acc: 0.0,
-                });
-            } else {
-                self.acc = 0.0;
+        if ctx.spawning {
+            let ramp = (1.0 - self.idle / EMISSION_RAMP_DOWN_SECS).clamp(0.0, 1.0);
+            if ramp > 0.0 {
+                self.acc += c.rate.value().max(0.0) * ctx.dt * ramp;
             }
-        }
-
-        // Bengal fire: living sparks crackle off smaller children of their
-        // own color, for as many generations as the theme allows.
-        if c.max_generations > 1 && c.child_rate > 0.0 {
-            let mut children: Vec<Spark> = Vec::new();
-            let mut population = self.list.len();
-            for s in self.list.iter_mut() {
-                if s.gen + 1 >= c.max_generations {
-                    continue;
-                }
-                s.emit_acc += c.child_rate.max(0.0) * ctx.dt;
-                while s.emit_acc >= 1.0 {
-                    s.emit_acc -= 1.0;
-                    if population >= cap {
-                        s.emit_acc = 0.0;
-                        break;
-                    }
+            let momentum = c.momentum.clamp(0.0, 1.0);
+            // Profile cap (children share the pool), with an absolute ceiling
+            // so a hand-edited profile can't flood the frame budget.
+            let cap = ctx.cfg.limits.sparkles.min(3000) as usize;
+            while self.acc >= 1.0 {
+                self.acc -= 1.0;
+                if self.list.len() < cap {
                     let ang = rnd01() * std::f32::consts::TAU;
-                    let speed = rnd_range(20.0, 110.0);
-                    children.push(Spark {
-                        x: s.x,
-                        y: s.y,
-                        vx: s.vx * 0.3 + ang.cos() * speed,
-                        vy: s.vy * 0.3 + ang.sin() * speed,
+                    let speed = rnd_range(30.0, 160.0);
+                    let color = self.next_color(&c.color, &c.palette);
+                    self.list.push(Spark {
+                        x: ctx.mouse.0 + rnd_range(-6.0, 6.0),
+                        y: ctx.mouse.1 + rnd_range(-6.0, 6.0),
+                        vx: ang.cos() * speed + ctx.vel.0 * momentum,
+                        vy: ang.sin() * speed + ctx.vel.1 * momentum,
                         born: ctx.now,
-                        life: (s.life * 0.6).max(0.15),
-                        size: (s.size * c.child_size).max(0.8),
+                        life: c.lifetime * rnd_range(0.6, 1.25),
+                        size: c.size * rnd_range(0.6, 1.4),
                         phase: rnd01() * std::f32::consts::TAU,
                         freq: rnd_range(6.0, 14.0),
-                        color: s.color,
-                        gen: s.gen + 1,
+                        color,
+                        gen: 0,
                         emit_acc: 0.0,
                     });
-                    population += 1;
+                } else {
+                    self.acc = 0.0;
                 }
             }
-            self.list.extend(children);
+
+            // Bengal fire: living sparks crackle off smaller children of
+            // their own color, for as many generations as the theme allows.
+            if c.max_generations > 1 && c.child_rate > 0.0 {
+                let mut children: Vec<Spark> = Vec::new();
+                let mut population = self.list.len();
+                for s in self.list.iter_mut() {
+                    if s.gen + 1 >= c.max_generations {
+                        continue;
+                    }
+                    s.emit_acc += c.child_rate.max(0.0) * ctx.dt;
+                    while s.emit_acc >= 1.0 {
+                        s.emit_acc -= 1.0;
+                        if population >= cap {
+                            s.emit_acc = 0.0;
+                            break;
+                        }
+                        let ang = rnd01() * std::f32::consts::TAU;
+                        let speed = rnd_range(20.0, 110.0);
+                        children.push(Spark {
+                            x: s.x,
+                            y: s.y,
+                            vx: s.vx * 0.3 + ang.cos() * speed,
+                            vy: s.vy * 0.3 + ang.sin() * speed,
+                            born: ctx.now,
+                            life: (s.life * 0.6).max(0.15),
+                            size: (s.size * c.child_size).max(0.8),
+                            phase: rnd01() * std::f32::consts::TAU,
+                            freq: rnd_range(6.0, 14.0),
+                            color: s.color,
+                            gen: s.gen + 1,
+                            emit_acc: 0.0,
+                        });
+                        population += 1;
+                    }
+                }
+                self.list.extend(children);
+            }
         }
 
         self.list.retain(|s| ctx.now - s.born < s.life);
@@ -1391,7 +1408,7 @@ impl Effect for Ripples {
         // One entry per click; the staggered rings are drawn from it.
         // Profile cap with an absolute ceiling (see the bubble cap).
         let cap = ctx.cfg.limits.ripples.min(128) as usize;
-        if ctx.clicked && self.list.len() < cap {
+        if ctx.spawning && ctx.clicked && self.list.len() < cap {
             self.list.push(Ripple {
                 x: ctx.mouse.0,
                 y: ctx.mouse.1,
@@ -1603,6 +1620,7 @@ mod tests {
             vel: (0.0, 0.0),
             clicked,
             moving,
+            spawning: true,
             cfg: test_settings(),
             // Generous bounds: emission tests must not lose bubbles to the
             // cursor-plow flinging them off-screen.
@@ -1628,11 +1646,44 @@ mod tests {
             vel,
             clicked,
             moving,
+            spawning: true,
             cfg: test_settings(),
             // Generous bounds: emission tests must not lose bubbles to the
             // cursor-plow flinging them off-screen.
             screen: (10000.0, 10000.0),
         }
+    }
+
+    #[test]
+    fn spawning_off_stops_emission_but_ages_out() {
+        let mut b = Bubbles::default();
+        b.list.push(bubble(500.0, 500.0));
+        b.list[0].life = 0.5;
+        let mut c = ctx((500.0, 500.0), true, 30.0);
+        c.spawning = false;
+        for i in 1..=120 {
+            c.now = 0.5 + i as f32 / 60.0;
+            b.update(&c);
+            assert!(b.list.len() <= 1, "no new bubbles while spawning is off");
+        }
+        assert!(b.list.is_empty(), "the old bubble should have aged out");
+    }
+
+    #[test]
+    fn trail_drops_samples_and_fades_while_spawning_is_off() {
+        let mut t = Trail::default();
+        let mut c = ctx((0.0, 0.0), false, 10.0);
+        t.push_samples(vec![(0.0, 0.0, 0.0), (10.0, 0.0, 0.5)]);
+        t.update(&c);
+        assert!(!t.pts.is_empty());
+        c.spawning = false;
+        t.push_samples(vec![(500.0, 500.0, 1.0)]);
+        for i in 1..=600 {
+            c.now = 0.5 + i as f32 / 60.0;
+            t.update(&c);
+        }
+        assert!(t.pts.is_empty(), "trail points should age out");
+        assert!(t.pending.is_empty(), "queued samples should be dropped, not replayed");
     }
 
     fn test_settings() -> &'static EffectSettings {
@@ -1821,6 +1872,7 @@ mod tests {
                 vel: (600.0, 0.0),
                 clicked: false,
                 moving: 30.0,
+                spawning: true,
                 cfg,
                 screen: (100.0, 100.0),
             };
@@ -2251,6 +2303,7 @@ mod tests {
             vel,
             clicked,
             moving,
+            spawning: true,
             cfg,
             screen: (10000.0, 10000.0),
         }

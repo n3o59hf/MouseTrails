@@ -28,6 +28,24 @@ pub fn icon_rgba_straight() -> Vec<u8> {
     b
 }
 
+/// Premultiplied BGRA, 32×32 — the tray icon in its "trails off" state: the
+/// same silhouette desaturated to a dim gray so the toggle is readable at a
+/// glance. Alpha is preserved; the luminance of a premultiplied pixel is
+/// itself premultiplied, so the gray can never exceed the alpha it sits
+/// under.
+pub fn icon_bgra_premul_dimmed() -> Vec<u8> {
+    let mut b = icon_bgra_premul();
+    for px in b.chunks_exact_mut(4) {
+        // BGRA byte order; Rec.601 luminance of the premultiplied channels.
+        let lum = 0.299 * px[2] as f32 + 0.587 * px[1] as f32 + 0.114 * px[0] as f32;
+        let gray = (lum * 0.45).min(px[3] as f32).round() as u8;
+        px[0] = gray;
+        px[1] = gray;
+        px[2] = gray;
+    }
+    b
+}
+
 /// Premultiplied RGBA (PNG-ready).
 const TAU: f32 = std::f32::consts::TAU;
 
@@ -116,5 +134,39 @@ fn hsv(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
         3 => (p, q, v),
         4 => (t, p, v),
         _ => (v, p, q),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dimmed_icon_is_gray_and_never_brighter() {
+        let a = icon_bgra_premul();
+        let d = icon_bgra_premul_dimmed();
+        let mut differs = false;
+        for (pa, pd) in a.chunks_exact(4).zip(d.chunks_exact(4)) {
+            assert_eq!(pa[3], pd[3], "alpha must be preserved");
+            if pa[3] == 0 {
+                continue;
+            }
+            assert_eq!(pd[0], pd[1], "dimmed pixels must be gray");
+            assert_eq!(pd[1], pd[2], "dimmed pixels must be gray");
+            let brightest = pa[0].max(pa[1]).max(pa[2]);
+            assert!(
+                pd[0] <= brightest,
+                "the gray must not exceed the original's brightest channel"
+            );
+            assert!(
+                pd[0] <= pd[3],
+                "premultiplied gray must stay under its alpha"
+            );
+            differs |= pa != pd;
+        }
+        assert!(
+            differs,
+            "the dimmed variant must differ from the normal icon"
+        );
     }
 }

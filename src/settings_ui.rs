@@ -165,7 +165,8 @@ fn hide_settings_window(ctx: &egui::Context, shared: &SharedSettings) {
                 None,
                 w!(
                     "MouseTrails keeps running in your system tray, near the clock.\n\n\
-                     Left-click the tray icon to open Settings again.\n\
+                     Double-click the tray icon to open Settings again;\n\
+                     left-click toggles the trails on and off.\n\
                      Right-click it for more options \u{2014} including Exit."
                 ),
                 w!("MouseTrails"),

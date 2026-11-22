@@ -71,7 +71,11 @@ Optional flag:
 The app starts minimized to the tray (it may be inside the `^` overflow next
 to the clock — drag it onto the taskbar to pin it there):
 
-- **Left-click** the tray icon — open Settings.
+- **Left-click** the tray icon — toggle the trails on/off. Whatever is on
+  screen fades out instead of vanishing, and the icon dims while off. The
+  toggle is per-run: it resets to on at the next start.
+- **Double-click** — open Settings (the trails also come back on whenever
+  Settings opens, so what you're tweaking is live).
 - **Right-click** — menu: *Open Settings…*, *Check for updates* / *Install
   update*, *Start with Windows*, *Exit*.
 

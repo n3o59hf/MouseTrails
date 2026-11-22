@@ -176,7 +176,7 @@ pub fn run(shared: Arc<SharedSettings>, open_settings_at_start: bool) {
             APP.with(|slot| {
                 let mut app = slot.borrow_mut();
                 let app = app.as_mut().unwrap();
-                app.ui.open(&app.shared);
+                app.open_settings();
             });
         }
 
@@ -269,6 +269,45 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// Wrap a 32×32 premultiplied BGRA buffer in an HICON (color DIB + opaque
+/// 1bpp mask — the combination the tray expects).
+fn make_hicon(bgra: &[u8]) -> HICON {
+    unsafe {
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut bmi = BITMAPINFO::default();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = 32;
+        bmi.bmiHeader.biHeight = -32;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB.0;
+        let color = CreateDIBSection(
+            HDC::default(),
+            &bmi,
+            DIB_RGB_COLORS,
+            &mut bits,
+            HANDLE::default(),
+            0,
+        )
+        .expect("icon DIB");
+        std::slice::from_raw_parts_mut(bits as *mut u8, 32 * 32 * 4).copy_from_slice(bgra);
+
+        let mask_bits = [0u8; 32 * 4]; // 1bpp, 32 rows padded to 4 bytes
+        let mask = CreateBitmap(32, 32, 1, 1, Some(mask_bits.as_ptr() as *const _));
+        let ii = ICONINFO {
+            fIcon: true.into(),
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask,
+            hbmColor: color,
+        };
+        let icon = CreateIconIndirect(&ii).expect("CreateIconIndirect");
+        let _ = DeleteObject(HGDIOBJ(color.0));
+        let _ = DeleteObject(HGDIOBJ(mask.0));
+        icon
     }
 }
 
@@ -440,6 +479,12 @@ struct App {
     prev_left: bool,
 
     hicon: HICON,
+    /// The same icon desaturated — what the tray shows while toggled off.
+    hicon_dim: HICON,
+    /// In-memory trail toggle (tray left-click). Never persisted: every
+    /// launch starts enabled. While off, nothing new spawns but whatever is
+    /// on screen keeps animating until it fades out.
+    trails_on: bool,
 
     dump_counter: u32,
     t0: Instant,
@@ -476,6 +521,8 @@ impl App {
             vel: (0.0, 0.0),
             prev_left: false,
             hicon: HICON::default(),
+            hicon_dim: HICON::default(),
+            trails_on: true,
             dump_counter: 0,
             t0: Instant::now(),
             sampler: None,
@@ -545,41 +592,8 @@ impl App {
     }
 
     fn create_icon(&mut self) {
-        unsafe {
-            let bgra = crate::icon::icon_bgra_premul();
-            let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-            let mut bmi = BITMAPINFO::default();
-            bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biWidth = 32;
-            bmi.bmiHeader.biHeight = -32;
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB.0;
-            let color = CreateDIBSection(
-                HDC::default(),
-                &bmi,
-                DIB_RGB_COLORS,
-                &mut bits,
-                HANDLE::default(),
-                0,
-            )
-            .expect("icon DIB");
-            std::slice::from_raw_parts_mut(bits as *mut u8, 32 * 32 * 4).copy_from_slice(&bgra);
-
-            let mask_bits = [0u8; 32 * 4]; // 1bpp, 32 rows padded to 4 bytes
-            let mask = CreateBitmap(32, 32, 1, 1, Some(mask_bits.as_ptr() as *const _));
-            let ii = ICONINFO {
-                fIcon: true.into(),
-                xHotspot: 0,
-                yHotspot: 0,
-                hbmMask: mask,
-                hbmColor: color,
-            };
-            let icon = CreateIconIndirect(&ii).expect("CreateIconIndirect");
-            let _ = DeleteObject(HGDIOBJ(color.0));
-            let _ = DeleteObject(HGDIOBJ(mask.0));
-            self.hicon = icon;
-        }
+        self.hicon = make_hicon(&crate::icon::icon_bgra_premul());
+        self.hicon_dim = make_hicon(&crate::icon::icon_bgra_premul_dimmed());
     }
 
     fn add_tray_icon(&mut self) {
@@ -597,11 +611,55 @@ impl App {
         }
     }
 
+    /// Swap the tray icon/tooltip to match the toggle state. The icon keeps
+    /// its identity — only the image and tip change (NIM_MODIFY).
+    fn update_tray_icon(&mut self) {
+        unsafe {
+            let mut nid = NOTIFYICONDATAW::default();
+            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+            nid.hWnd = self.hwnd;
+            nid.uID = TRAY_ID;
+            nid.uFlags = NIF_ICON | NIF_TIP;
+            nid.hIcon = if self.trails_on { self.hicon } else { self.hicon_dim };
+            let tip = if self.trails_on {
+                "MouseTrails"
+            } else {
+                "MouseTrails \u{2014} trails off (click to enable)"
+            };
+            let tip: Vec<u16> = format!("{tip}\0").encode_utf16().collect();
+            nid.szTip[..tip.len()].copy_from_slice(&tip);
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+        }
+    }
+
+    fn set_trails_on(&mut self, on: bool) {
+        if self.trails_on != on {
+            self.trails_on = on;
+            self.update_tray_icon();
+        }
+    }
+
+    /// Open the settings window, turning the trails back on — with Settings
+    /// on screen the user expects the effects they're tweaking to be live.
+    fn open_settings(&mut self) {
+        self.set_trails_on(true);
+        self.ui.open(&self.shared);
+    }
+
     fn tray_event(&mut self, lparam: LPARAM) -> TrayAction {
         match lparam.0 as u32 {
             WM_RBUTTONUP => TrayAction::ShowMenu,
-            WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
-                self.ui.open(&self.shared);
+            // A double-click delivers WM_LBUTTONUP for the first click and
+            // then WM_LBUTTONDBLCLK, so the toggle fires first and the
+            // settings path re-enables the trails right after — the net
+            // state is always "on with Settings open", no click-timer
+            // disambiguation needed.
+            WM_LBUTTONUP => {
+                self.set_trails_on(!self.trails_on);
+                TrayAction::None
+            }
+            WM_LBUTTONDBLCLK => {
+                self.open_settings();
                 TrayAction::None
             }
             _ => TrayAction::None,
@@ -612,7 +670,7 @@ impl App {
         let id = (wparam.0 & 0xFFFF) as u32;
         match id {
             ID_SETTINGS => {
-                self.ui.open(&self.shared);
+                self.open_settings();
                 TrayAction::None
             }
             ID_UPDATE_CHECK => {
@@ -672,6 +730,9 @@ impl App {
             }
             if !self.hicon.is_invalid() {
                 let _ = DestroyIcon(self.hicon);
+            }
+            if !self.hicon_dim.is_invalid() {
+                let _ = DestroyIcon(self.hicon_dim);
             }
             PostQuitMessage(0);
         }
@@ -767,7 +828,9 @@ impl App {
 
         // Feed the sampler's high-frequency cursor path into the trail. If the
         // sampler thread isn't available for some reason, fall back to a
-        // single per-tick sample so the trail still appears.
+        // single per-tick sample so the trail still appears. While toggled
+        // off the drained samples are simply dropped — the buffer keeps
+        // flowing, so re-enabling doesn't replay a stale path.
         let mut samples: Vec<(f32, f32, f32)> = match &self.sampler {
             Some(s) => s
                 .drain()
@@ -776,10 +839,12 @@ impl App {
                 .collect(),
             None => Vec::new(),
         };
-        if samples.is_empty() && moved > 0.5 {
-            samples.push((mx, my, self.clock as f32));
+        if self.trails_on {
+            if samples.is_empty() && moved > 0.5 {
+                samples.push((mx, my, self.clock as f32));
+            }
+            self.effects.push_trail_samples(samples);
         }
-        self.effects.push_trail_samples(samples);
 
         let ctx = effects::Ctx {
             dt,
@@ -788,6 +853,7 @@ impl App {
             vel,
             clicked,
             moving: moved,
+            spawning: self.trails_on,
             cfg: &cfg,
             screen: (self.w as f32, self.h as f32),
         };

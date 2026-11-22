@@ -91,6 +91,8 @@ impl ThemePreview {
             vel: self.vel,
             clicked,
             moving: moved,
+            // Previews always animate, whatever the tray toggle state.
+            spawning: true,
             cfg: &es,
             screen: (w, h),
         };
