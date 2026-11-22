@@ -74,8 +74,9 @@ to the clock — drag it onto the taskbar to pin it there):
 - **Left-click** the tray icon — toggle the trails on/off. Whatever is on
   screen fades out instead of vanishing, and the icon dims while off. The
   toggle is per-run: it resets to on at the next start.
-- **Double-click** — open Settings (the trails also come back on whenever
-  Settings opens, so what you're tweaking is live).
+- **Double-click** — open Settings. The trails come back on and stay on
+  while Settings is open (so what you're tweaking is live); left-click
+  toggling resumes once it's closed.
 - **Right-click** — menu: *Open Settings…*, *Check for updates* / *Install
   update*, *Start with Windows*, *Exit*.
 

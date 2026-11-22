@@ -22,6 +22,10 @@ pub enum UiMsg {
 pub struct SettingsUiManager {
     tx: Option<Sender<UiMsg>>,
     alive: Arc<AtomicBool>,
+    /// Whether the settings window is currently on screen, published by the
+    /// settings thread. While it is visible the overlay force-enables the
+    /// trails — what's being tweaked must be live — so tray toggling is off.
+    visible: Arc<AtomicBool>,
 }
 
 impl Default for SettingsUiManager {
@@ -32,7 +36,11 @@ impl Default for SettingsUiManager {
 
 impl SettingsUiManager {
     pub fn new() -> Self {
-        Self { tx: None, alive: Arc::new(AtomicBool::new(false)) }
+        Self {
+            tx: None,
+            alive: Arc::new(AtomicBool::new(false)),
+            visible: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     pub fn open(&mut self, shared: &Arc<SharedSettings>) {
@@ -44,6 +52,9 @@ impl SettingsUiManager {
                     // never wakes it), so the queued Show would never be
                     // processed. Wake it directly instead.
                     show_settings_window();
+                    // Optimistic: the settings thread confirms it when its
+                    // loop runs, but the tray may click again before that.
+                    self.visible.store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
             }
@@ -52,16 +63,26 @@ impl SettingsUiManager {
         let alive = Arc::new(AtomicBool::new(true));
         let shared = shared.clone();
         let alive2 = alive.clone();
+        // Starts true: the window is created visible, and the thread flips
+        // the flag to false if the user hides it.
+        let visible = Arc::new(AtomicBool::new(true));
+        let visible2 = visible.clone();
         let spawned = std::thread::Builder::new()
             .name("settings-ui".into())
             .spawn(move || {
-                run_ui(shared, rx);
+                run_ui(shared, rx, visible2);
                 alive2.store(false, std::sync::atomic::Ordering::Relaxed);
             });
         if spawned.is_ok() {
             self.tx = Some(tx);
             self.alive = alive;
+            self.visible = visible;
         }
+    }
+
+    /// Whether the settings window is currently on screen.
+    pub fn settings_visible(&self) -> bool {
+        self.visible.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn notify_startup_changed(&self, on: bool) {
@@ -82,7 +103,7 @@ fn show_settings_window() {
     }
 }
 
-fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
+fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>, visible: Arc<AtomicBool>) {
     let icon_rgba = icon::icon_rgba_straight();
     let icon = egui::IconData { width: 32, height: 32, rgba: icon_rgba };
 
@@ -116,6 +137,7 @@ fn run_ui(shared: Arc<SharedSettings>, rx: Receiver<UiMsg>) {
         preset_dialog_name: String::new(),
         preset_dialog_source: None,
         window_visible: true,
+        visible_flag: visible,
         fs_snapshot,
         fs_check: std::time::Instant::now(),
         save_pending: false,
@@ -240,6 +262,9 @@ struct SettingsApp {
     preset_dialog_source: Option<PresetSource>,
     /// Tracked hide/show state of the window (drives preview animation).
     window_visible: bool,
+    /// The same state published to the overlay thread: while the window is
+    /// on screen the overlay keeps the trails force-enabled.
+    visible_flag: Arc<AtomicBool>,
     /// Last seen existence fingerprint of the themes tree (folder and
     /// profile names, not contents). A change means files were added or
     /// removed by hand and the gallery should rebuild.
@@ -730,6 +755,7 @@ impl eframe::App for SettingsApp {
                         crate::overlay::debug_log("ui: Show received".into());
                     }
                     self.window_visible = true;
+                    self.visible_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -910,6 +936,7 @@ impl eframe::App for SettingsApp {
             }
             hide_settings_window(ctx, shared);
             self.window_visible = false;
+            self.visible_flag.store(false, std::sync::atomic::Ordering::Relaxed);
             // A hidden window gets no further passes, so a debounced write
             // still in flight would only land on the next open — or never,
             // if the app exits first. Flush before going dormant.

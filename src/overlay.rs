@@ -19,7 +19,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, GetDoubleClickTime, VK_LBUTTON,
+};
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -485,6 +487,9 @@ struct App {
     /// launch starts enabled. While off, nothing new spawns but whatever is
     /// on screen keeps animating until it fades out.
     trails_on: bool,
+    /// When the last WM_LBUTTONDBLCLK arrived. A double-click's trailing
+    /// WM_LBUTTONUP (the second release) must not count as a toggle.
+    last_dblclick: Instant,
 
     dump_counter: u32,
     t0: Instant,
@@ -523,6 +528,9 @@ impl App {
             hicon: HICON::default(),
             hicon_dim: HICON::default(),
             trails_on: true,
+            // "An hour ago": a fresh app has seen no double-click yet, and
+            // this must not swallow the first left-click after launch.
+            last_dblclick: Instant::now() - std::time::Duration::from_secs(3600),
             dump_counter: 0,
             t0: Instant::now(),
             sampler: None,
@@ -649,16 +657,23 @@ impl App {
     fn tray_event(&mut self, lparam: LPARAM) -> TrayAction {
         match lparam.0 as u32 {
             WM_RBUTTONUP => TrayAction::ShowMenu,
-            // A double-click delivers WM_LBUTTONUP for the first click and
-            // then WM_LBUTTONDBLCLK, so the toggle fires first and the
-            // settings path re-enables the trails right after — the net
-            // state is always "on with Settings open", no click-timer
-            // disambiguation needed.
+            // A double-click reports WM_LBUTTONDBLCLK for the second press
+            // and then a trailing WM_LBUTTONUP for its release — without a
+            // guard that stray UP would toggle right after the double-click
+            // re-enabled the trails (leaving Settings open with the trails
+            // off). Clicks are also inert while Settings is on screen: the
+            // tick loop force-enables the trails there anyway.
             WM_LBUTTONUP => {
-                self.set_trails_on(!self.trails_on);
+                let stray_click = self.ui.settings_visible()
+                    || self.last_dblclick.elapsed().as_millis()
+                        < u128::from(unsafe { GetDoubleClickTime() });
+                if !stray_click {
+                    self.set_trails_on(!self.trails_on);
+                }
                 TrayAction::None
             }
             WM_LBUTTONDBLCLK => {
+                self.last_dblclick = Instant::now();
                 self.open_settings();
                 TrayAction::None
             }
@@ -746,6 +761,13 @@ impl App {
         // clamped dt here would drift trail aging on any tick slower than
         // 100ms.
         self.clock = self.t0.elapsed().as_secs_f64();
+
+        // While Settings is on screen, whatever the user is tweaking must be
+        // live: re-assert the trails every tick so they cannot stay (or be
+        // clicked) off behind the settings window.
+        if self.ui.settings_visible() {
+            self.set_trails_on(true);
+        }
 
         let raw = self.shared.effects.read().unwrap().clone();
         let render_fps = self.shared.app.read().unwrap().render_fps;
